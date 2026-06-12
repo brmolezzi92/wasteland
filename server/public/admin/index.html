@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wasteland · Consola del Servidor</title>
+<style>
+  :root {
+    --bg: #0c0a08; --panel: #15110d; --panel2: #1d1812;
+    --border: #3a2e1e; --amber: #e0a040; --amber-hot: #ffb43c;
+    --energy: #58a6ff; --green: #66e06a; --red: #e05050; --dim: #8a7a60;
+    --text: #f0e4cc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+    background: var(--panel); border-bottom: 2px solid var(--border);
+  }
+  header h1 { font-size: 18px; margin: 0; color: var(--amber); letter-spacing: 1px; }
+  header .stat { color: var(--dim); font-size: 13px; }
+  header .stat b { color: var(--text); }
+  .conn { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  input {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 5px; font-size: 13px;
+  }
+  button {
+    background: var(--amber); color: #1a1206; border: none; padding: 6px 14px;
+    border-radius: 5px; font-weight: 700; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: var(--amber-hot); }
+  button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--border); }
+  button.ghost:hover { color: var(--text); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); }
+  .dot.on { background: var(--green); }
+  main { display: grid; grid-template-columns: 1fr 520px; gap: 14px; padding: 14px 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .panel h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--amber); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 6px 8px; border-bottom: 1px solid #221a10; }
+  tr:hover td { background: #1a140d; }
+  .ping-ok { color: var(--green); } .ping-warn { color: var(--amber); } .ping-bad { color: var(--red); }
+  .pill { font-size: 11px; padding: 2px 7px; border-radius: 10px; background: var(--panel2); color: var(--dim); }
+  .pill.duel { background: #3a1818; color: #ff8866; }
+  .mini { padding: 3px 9px; font-size: 12px; }
+  canvas { width: 100%; background: #08110a; border-radius: 6px; display: block; image-rendering: pixelated; }
+  .spec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .spec-legend { display: flex; gap: 14px; font-size: 12px; color: var(--dim); margin-top: 8px; }
+  .lg { display: inline-flex; align-items: center; gap: 5px; }
+  .lg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .duel-row { padding: 7px 0; border-bottom: 1px solid #221a10; font-size: 13px; }
+  .empty { color: var(--dim); font-style: italic; padding: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⛓ WASTELAND</h1>
+  <span class="stat">uptime <b id="uptime">—</b></span>
+  <span class="stat">tick <b id="tick">—</b></span>
+  <span class="stat"><b id="online">0</b> online</span>
+  <div class="conn">
+    <div class="dot" id="connDot"></div>
+    <input id="token" placeholder="admin token" size="14" />
+    <button id="connectBtn">Conectar</button>
+  </div>
+</header>
+
+<main>
+  <div>
+    <div class="panel">
+      <h2>Jugadores en línea</h2>
+      <table>
+        <thead><tr><th>Jugador</th><th>Clase</th><th>Zona</th><th>Pos</th><th>HP</th><th>Ping</th><th>Estado</th><th></th></tr></thead>
+        <tbody id="playerRows"></tbody>
+      </table>
+      <div id="playerEmpty" class="empty">Sin jugadores conectados.</div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Duelos activos</h2>
+      <div id="duelList"></div>
+      <div id="duelEmpty" class="empty">Sin duelos en curso.</div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Zonas activas</h2>
+      <div id="zoneList" class="spec-legend"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="spec-head">
+      <h2 style="margin:0">Spectate <span id="specZone" style="color:var(--dim)"></span></h2>
+      <button class="ghost mini" id="specStop">Detener</button>
+    </div>
+    <canvas id="spec" width="500" height="400"></canvas>
+    <div class="spec-legend">
+      <span class="lg"><i style="background:#58a6ff"></i> Jugador</span>
+      <span class="lg"><i style="background:#e05050"></i> Enemigo</span>
+      <span class="lg"><i style="background:#ff4444"></i> Jefe</span>
+      <span class="lg"><i style="background:#ffe080"></i> Item</span>
+    </div>
+    <div id="specHint" class="empty">Click "👁" en un jugador para spectear su zona.</div>
+  </div>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="./dashboard.js"></script>
+</body>
+</html>

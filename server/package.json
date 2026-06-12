@@ -1,0 +1,30 @@
+{
+  "name": "wasteland-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Servidor autoritativo de Wasteland (Node + socket.io). Corre el mundo, IA, combate y duelos. Incluye consola web + TUI.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "tui": "tsx src/admin/tui.ts",
+    "tunnel": "tsx scripts/tunnel.ts",
+    "typecheck": "tsc --noEmit",
+    "sync:tilemap": "tsx scripts/syncTilemap.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "cli-table3": "^0.6.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "picocolors": "^1.1.0",
+    "socket.io": "^4.8.0",
+    "socket.io-client": "^4.8.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

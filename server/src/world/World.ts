@@ -1,0 +1,228 @@
+import { TILE, ZONE_NAMES, ZONE_COUNT } from '../shared/tilemap.js';
+import { SPELLS, ITEMS, CC_AOE_MULT } from '../shared/gameData.js';
+import { Zone, type FxEvent } from './Zone.js';
+import { Player } from './Player.js';
+import { calcSpellDamage, applyDamageToPlayer } from './combat.js';
+import type { NetPlayer, NetEnemy, NetGroundItem, ZoneSnapshot } from '../net/protocol.js';
+
+// Interfaz de red inyectada (la implementa la capa socket.io con rooms).
+export interface WorldNet {
+  emitToUser(userId: string, event: string, payload: unknown): void;
+  emitToZone(zoneIdx: number, event: string, payload: unknown): void;
+}
+
+function targetMode(dt: string): 'instant' | 'ground' | 'enemy' | 'ally' {
+  if (['self', 'aoe_self', 'melee_area', 'aoe_heal', 'single_target_heal'].includes(dt)) return 'instant';
+  if (dt === 'resurrect') return 'ally';
+  if (dt === 'aoe_targeted') return 'ground';
+  return 'enemy';
+}
+
+export class World {
+  zones = new Map<number, Zone>();
+  players = new Map<string, Player>();      // userId → Player
+  bySocket = new Map<string, string>();     // socketId → userId
+  serverTick = 0;
+  onPlayerDeath: ((userId: string) => void) | null = null;
+
+  constructor(private net: WorldNet) {}
+
+  zone(idx: number): Zone {
+    let z = this.zones.get(idx);
+    if (!z) { z = new Zone(idx); this.zones.set(idx, z); }
+    return z;
+  }
+
+  playersInZone(idx: number): Player[] {
+    const out: Player[] = [];
+    for (const p of this.players.values()) if (p.zoneIdx === idx) out.push(p);
+    return out;
+  }
+
+  // ── Ciclo de vida del jugador ──────────────────────────────────────────────
+  addPlayer(p: Player) {
+    const z = this.zone(p.zoneIdx);
+    p.spawnTx = z.map.playerSpawn.tx; p.spawnTy = z.map.playerSpawn.ty;
+    p.tx = z.map.playerSpawn.tx; p.ty = z.map.playerSpawn.ty;
+    this.players.set(p.userId, p);
+    this.bySocket.set(p.socketId, p.userId);
+  }
+
+  removePlayerBySocket(socketId: string) {
+    const userId = this.bySocket.get(socketId);
+    if (!userId) return;
+    this.bySocket.delete(socketId);
+    this.players.delete(userId);
+  }
+
+  getByUser(userId: string) { return this.players.get(userId); }
+
+  // ── Acciones entrantes ─────────────────────────────────────────────────────
+  handleMove(userId: string, tx: number, ty: number, facing: number, moving: boolean) {
+    const p = this.players.get(userId); if (!p) return;
+    const z = this.zone(p.zoneIdx);
+    // Validación anti-teleport: solo aceptar saltos de ≤2 tiles o dentro de la zona
+    if (tx < 0 || tx >= z.map.width || ty < 0 || ty >= z.map.height) return;
+    if (z.map.isSolid(tx, ty)) return;
+    p.tx = tx; p.ty = ty; p.facing = facing; p.moving = moving;
+  }
+
+  handleZoneChange(userId: string, zoneIdx: number) {
+    const p = this.players.get(userId); if (!p) return;
+    if (zoneIdx < 0 || zoneIdx >= ZONE_COUNT) return;
+    p.zoneIdx = zoneIdx;
+    const z = this.zone(zoneIdx);
+    p.spawnTx = z.map.playerSpawn.tx; p.spawnTy = z.map.playerSpawn.ty;
+  }
+
+  handlePickup(userId: string, tx: number, ty: number) {
+    const p = this.players.get(userId); if (!p || p.isGhost) return;
+    const z = this.zone(p.zoneIdx);
+    if (p.tx !== tx || p.ty !== ty) return;
+    const it = z.pickupAt(tx, ty);
+    if (!it) return;
+    p.addItem(it.itemId, it.qty);
+    this.net.emitToUser(userId, 'you', { inventory: p.inventory });
+    this.net.emitToUser(userId, 'log', { msg: `+${it.qty} ${z.itemName(it.itemId)}`, color: '#ffe080' });
+  }
+
+  handleUsePotion(userId: string, slot: number) {
+    const p = this.players.get(userId); if (!p) return;
+    if (p.potionCd > 0) return;
+    const s = p.inventory[slot]; if (!s) return;
+    const data = ITEMS[s.itemId];
+    if (!data || data.type !== 'consumable') return;
+    if (data.restore_hp) p.hp = Math.min(p.maxHp, p.hp + data.restore_hp);
+    if (data.restore_mp) p.energy = Math.min(p.maxEnergy, p.energy + data.restore_mp);
+    s.qty--; if (s.qty <= 0) p.inventory[slot] = null;
+    p.potionCd = 0.5;
+    this.net.emitToUser(userId, 'you', { hp: p.hp, energy: p.energy, inventory: p.inventory });
+  }
+
+  handleCast(userId: string, msg: { spellId: string; enemyIdx?: number; wx?: number; wy?: number; allyUserId?: string }) {
+    const p = this.players.get(userId); if (!p || p.isGhost) return;
+    const idx = p.spellIds.indexOf(msg.spellId);
+    if (idx === -1) return;
+    const sp = SPELLS[msg.spellId]; if (!sp) return;
+    const cost = sp.energy_cost || 0;
+    if (p.spellCd[idx] > 0 || p.energy < cost) return;
+
+    const z = this.zone(p.zoneIdx);
+    const mode = targetMode(sp.damage_type);
+    const color = (sp.color[0] << 16) | (sp.color[1] << 8) | sp.color[2];
+    const pcx = p.tx * TILE + TILE / 2, pcy = p.ty * TILE + TILE / 2;
+    const cc = sp.cc || null;
+
+    if (mode === 'instant') {
+      if (sp.damage_type === 'self') {
+        if (sp.shield) { p.shield = sp.shield; p.shieldTimer = sp.shield_duration || 5; }
+        if (sp.invisible_duration) { p.isInvisible = true; p.invisTimer = sp.invisible_duration; }
+        if (sp.cleanse) { p.cc = null; p.ccTimer = 0; }
+        this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'explosion', wx: pcx, wy: pcy, color, amount: sp.aoe_radius || 64 });
+      } else if (sp.damage_type === 'aoe_heal' || sp.damage_type === 'single_target_heal') {
+        let heal = sp.heal_base || 0;
+        if (sp.damage_type === 'aoe_heal') heal = Math.round(heal * (sp.heal_multiplier || 0.55));
+        p.hp = Math.min(p.maxHp, p.hp + heal);
+        this.net.emitToUser(userId, 'you', { hp: p.hp });
+        this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'heal', wx: pcx, wy: pcy, amount: heal, color });
+      } else {
+        // aoe_self / melee_area: daño alrededor del jugador
+        const r = sp.aoe_radius || 64;
+        const dmg = calcSpellDamage(sp, p.baseDamage);
+        const dead = z.damageRadius(pcx, pcy, r, dmg, cc, (sp.cc_duration || 1.5) * CC_AOE_MULT);
+        this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'explosion', wx: pcx, wy: pcy, color, amount: r });
+        for (const e of dead) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
+      }
+    } else if (mode === 'ground') {
+      const r = sp.aoe_radius || 96;
+      const dmg = calcSpellDamage(sp, p.baseDamage);
+      const wx = msg.wx ?? pcx, wy = msg.wy ?? pcy;
+      const dead = z.damageRadius(wx, wy, r, dmg, cc, (sp.cc_duration || 1.5) * CC_AOE_MULT);
+      this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'explosion', wx, wy, color, amount: r });
+      for (const e of dead) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
+    } else if (mode === 'enemy') {
+      const e = msg.enemyIdx != null ? z.enemies[msg.enemyIdx] : null;
+      if (e && e.alive) {
+        const dmg = calcSpellDamage(sp, p.baseDamage);
+        const ewx = e.tx * TILE + TILE / 2, ewy = e.ty * TILE + TILE / 2;
+        const died = z.hitEnemy(e, dmg, cc, sp.cc_duration || 0);
+        if (sp.effect === 'projectile') {
+          this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'projectile', wx: pcx, wy: pcy, wx2: ewx, wy2: ewy, color });
+        }
+        this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'hit', wx: ewx, wy: ewy, amount: dmg, color: 0xff5050, text: `-${dmg}` });
+        this.net.emitToUser(userId, 'log', { msg: `Atacaste a ${e.name} por ${dmg}. HP: ${Math.round(e.hp)}/${e.maxHp}`, color: '#ffb43c' });
+        if (died) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
+      }
+    }
+
+    p.energy -= cost;
+    p.spellCd[idx] = sp.cooldown || 1.5;
+    this.net.emitToUser(userId, 'you', { energy: p.energy });
+  }
+
+  // ── Tick principal ─────────────────────────────────────────────────────────
+  tick(dt: number) {
+    this.serverTick++;
+    for (const p of this.players.values()) {
+      const wasGhost = p.isGhost;
+      p.tick(dt);
+      if (wasGhost && !p.isGhost) {
+        // respawneó
+        this.net.emitToUser(p.userId, 'forceZone', { zoneIdx: p.zoneIdx, tx: p.tx, ty: p.ty });
+        this.net.emitToUser(p.userId, 'you', { hp: p.hp, energy: p.energy, isGhost: false });
+      }
+    }
+
+    // Solo tickear zonas con jugadores (ahorra CPU)
+    const activeZones = new Set<number>();
+    for (const p of this.players.values()) activeZones.add(p.zoneIdx);
+
+    for (const zi of activeZones) {
+      const z = this.zone(zi);
+      const playersHere = this.playersInZone(zi);
+      z.tick(dt, playersHere,
+        (uid, dmg, wx, wy) => this.damagePlayer(uid, dmg, wx, wy),
+        (fx: FxEvent) => this.net.emitToZone(zi, 'fx', fx),
+      );
+    }
+  }
+
+  private damagePlayer(userId: string, dmg: number, wx: number, wy: number) {
+    const p = this.players.get(userId); if (!p) return;
+    const red = applyDamageToPlayer(p, dmg);
+    if (red <= 0) return;
+    this.net.emitToUser(userId, 'you', { hp: p.hp, isInvisible: p.isInvisible });
+    this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'hit', wx, wy, amount: red, color: 0xff5a5a, text: `-${red}`, targetUserId: userId });
+    this.net.emitToUser(userId, 'log', { msg: `Recibiste ${red} de daño. HP: ${Math.round(p.hp)}/${p.maxHp}`, color: '#ff6060' });
+    if (p.hp <= 0 && !p.isGhost) {
+      p.die();
+      this.net.emitToUser(userId, 'you', { hp: 0, isGhost: true });
+      this.net.emitToUser(userId, 'log', { msg: 'Fuiste eliminado. Respawn en 18s…', color: '#ff4444' });
+      this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'death', wx, wy, targetUserId: userId });
+      this.onPlayerDeath?.(userId);
+    }
+  }
+
+  // ── Snapshots ──────────────────────────────────────────────────────────────
+  netPlayer(p: Player): NetPlayer {
+    return {
+      userId: p.userId, username: p.username, classId: p.classId,
+      tx: p.tx, ty: p.ty, hp: Math.round(p.hp), maxHp: p.maxHp,
+      energy: Math.round(p.energy), maxEnergy: p.maxEnergy,
+      facing: p.facing, moving: p.moving, isGhost: p.isGhost,
+    };
+  }
+
+  snapshot(zoneIdx: number): ZoneSnapshot {
+    const z = this.zone(zoneIdx);
+    const enemies: NetEnemy[] = z.enemies.map(e => ({
+      idx: e.idx, name: e.name, kind: e.kind, tx: e.tx, ty: e.ty,
+      hp: Math.round(e.hp), maxHp: e.maxHp, alive: e.alive, facing: e.facing, cc: e.cc,
+    }));
+    const items: NetGroundItem[] = z.items.map(it => ({ itemId: it.itemId, qty: it.qty, tx: it.tx, ty: it.ty }));
+    const players: NetPlayer[] = this.playersInZone(zoneIdx).map(p => this.netPlayer(p));
+    return { zoneIdx, tick: this.serverTick, enemies, items, players };
+  }
+
+  zoneName(idx: number) { return ZONE_NAMES[idx] ?? `Zona ${idx}`; }
+}
