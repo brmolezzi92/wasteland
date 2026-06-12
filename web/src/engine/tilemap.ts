@@ -99,9 +99,6 @@ export class TileMap {
   private p(key: string, tx: number, ty: number, scale = 1.0) {
     this.props.push({ key, tx, ty, scale });
   }
-  private e(name: string, tx: number, ty: number, hp: number) {
-    this.enemies.push({ name, tx, ty, hp });
-  }
   // Deterministic hash for pseudo-random patterns (no Math.random)
   private h(r: number, c: number) { return ((r * 1009 + c * 1013 + r * c) & 0x7fffffff) % 100; }
 
