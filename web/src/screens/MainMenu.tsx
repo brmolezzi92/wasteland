@@ -249,8 +249,8 @@ export default function MainMenu() {
         </nav>
 
         <div className="hub-user">
-          <button className="server-chip" onClick={editServer} title="Configurar servidor de juego">
-            🖧 {serverUrl.replace(/^https?:\/\//, '')}
+          <button className={`server-chip ${serverUrl ? '' : 'server-chip--unset'}`} onClick={editServer} title="Configurar servidor de juego">
+            🖧 {serverUrl ? serverUrl.replace(/^https?:\/\//, '') : 'sin servidor — configurar'}
           </button>
           <span className="online-chip"><i className="online-dot" /> ONLINE</span>
           {profile && rank && (

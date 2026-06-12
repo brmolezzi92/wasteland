@@ -10,21 +10,27 @@ import type {
 //      compartir un link a tu amigo con tu túnel actual.
 //   2. localStorage 'serverUrl' (lo que guardaste / pegaste en el menú).
 //   3. VITE_SERVER_URL del build.
-//   4. localhost:8787 (dev local).
-// Así el cliente desplegado puede apuntar a tu PC (vía túnel) SIN rebuildear.
+//   4. SOLO en dev local: localhost:8787.
+// IMPORTANTE: en producción NUNCA cae a localhost. Si no hay nada configurado
+// devuelve '' y el cliente avisa en vez de pegarle silenciosamente a la propia
+// máquina del jugador (que es lo que rompía el multiplayer).
+const clean = (u: string) => u.trim().replace(/\/+$/, '');
+
 export function resolveServerUrl(): string {
   try {
     const q = new URLSearchParams(location.search).get('server');
-    if (q) { localStorage.setItem('serverUrl', q); return q.replace(/\/+$/, ''); }
+    if (q) { localStorage.setItem('serverUrl', clean(q)); return clean(q); }
     const ls = localStorage.getItem('serverUrl');
-    if (ls) return ls.replace(/\/+$/, '');
+    if (ls) return clean(ls);
   } catch { /* SSR / sin window */ }
-  return (import.meta.env.VITE_SERVER_URL || 'http://localhost:8787').replace(/\/+$/, '');
+  if (import.meta.env.VITE_SERVER_URL) return clean(import.meta.env.VITE_SERVER_URL);
+  // Solo en desarrollo local usamos localhost; en prod, sin configurar → ''.
+  return import.meta.env.DEV ? 'http://localhost:8787' : '';
 }
 
 export function setServerUrl(url: string) {
-  const clean = url.trim().replace(/\/+$/, '');
-  if (clean) localStorage.setItem('serverUrl', clean);
+  const c = clean(url);
+  if (c) localStorage.setItem('serverUrl', c);
   else localStorage.removeItem('serverUrl');
 }
 
@@ -56,6 +62,14 @@ export class NetClient {
 
   connect(join: { userId: string; username: string; classId: string; charId: string }) {
     this.serverUrl = resolveServerUrl();
+    if (!this.serverUrl) {
+      // Sin server configurado en producción: avisamos en vez de pegarle a localhost.
+      this.handlers.onConnChange(false);
+      this.handlers.onLog(
+        '⚠ No hay servidor configurado. Abrí el menú y pegá la URL del túnel en el chip 🖧, o entrá con ?server=<url>.',
+        '#ffb43c');
+      return;
+    }
     this.socket = io(`${this.serverUrl}/game`, {
       transports: ['websocket'],
       reconnection: true,

@@ -356,3 +356,5 @@
   white-space: nowrap; transition: all .12s;
 }
 .server-chip:hover { border-color: #e0a040; color: #f0e4cc; }
+.server-chip--unset { border-color: #c8502a; color: #ff8844; animation: serverPulse 1.6s infinite; }
+@keyframes serverPulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
