@@ -1,60 +1,60 @@
 {
   "hp_potion": {
-    "id": "hp_potion",
-    "name": "Jeringa de Adrenalina",
-    "type": "consumable",
-    "color": [200, 55, 55],
-    "restore_hp": 50,
-    "restore_mp": 0
+    "id": "hp_potion", "name": "Jeringa de Adrenalina", "type": "consumable",
+    "color": [200, 55, 55], "restore_hp": 50, "restore_mp": 0
   },
   "mp_potion": {
-    "id": "mp_potion",
-    "name": "Celda de Energía",
-    "type": "consumable",
-    "color": [55, 105, 215],
-    "restore_hp": 0,
-    "restore_mp": 80
+    "id": "mp_potion", "name": "Celda de Energía", "type": "consumable",
+    "color": [55, 105, 215], "restore_hp": 0, "restore_mp": 80
   },
   "hp_potion_large": {
-    "id": "hp_potion_large",
-    "name": "Kit Médico",
-    "type": "consumable",
-    "color": [230, 30, 30],
-    "restore_hp": 120,
-    "restore_mp": 0
+    "id": "hp_potion_large", "name": "Kit Médico", "type": "consumable",
+    "color": [230, 30, 30], "restore_hp": 120, "restore_mp": 0
   },
   "mp_potion_large": {
-    "id": "mp_potion_large",
-    "name": "Batería de Alta Capacidad",
-    "type": "consumable",
-    "color": [30, 60, 240],
-    "restore_hp": 0,
-    "restore_mp": 180
+    "id": "mp_potion_large", "name": "Batería de Alta Capacidad", "type": "consumable",
+    "color": [30, 60, 240], "restore_hp": 0, "restore_mp": 180
   },
   "food_ration": {
-    "id": "food_ration",
-    "name": "Ración de Supervivencia",
-    "type": "food",
-    "color": [180, 140, 60],
-    "buff": "hp_regen",
-    "buff_value": 5,
-    "buff_duration": 30
+    "id": "food_ration", "name": "Ración de Supervivencia", "type": "food",
+    "color": [180, 140, 60], "buff": "hp_regen", "buff_value": 5, "buff_duration": 30
   },
   "stim_pack": {
-    "id": "stim_pack",
-    "name": "Estimulante de Combate",
-    "type": "food",
-    "color": [220, 80, 150],
-    "buff": "damage_boost",
-    "buff_value": 0.15,
-    "buff_duration": 20
+    "id": "stim_pack", "name": "Estimulante de Combate", "type": "food",
+    "color": [220, 80, 150], "buff": "damage_boost", "buff_value": 0.15, "buff_duration": 20
   },
   "scrap": {
-    "id": "scrap",
-    "name": "Chatarra",
-    "type": "material",
-    "color": [175, 145, 65],
-    "stackable": true,
-    "max_stack": 999
+    "id": "scrap", "name": "Chatarra", "type": "material",
+    "color": [175, 145, 65], "stackable": true, "max_stack": 999
+  },
+  "placa_ia": {
+    "id": "placa_ia", "name": "Placa IA", "type": "material",
+    "color": [200, 60, 60], "stackable": true, "max_stack": 99,
+    "desc": "Circuito de identificación de una unidad enemiga. Los mecánicos la pagan bien."
+  },
+  "cristal_corrompido": {
+    "id": "cristal_corrompido", "name": "Cristal Corrompido", "type": "material",
+    "color": [130, 50, 230], "stackable": true, "max_stack": 99,
+    "desc": "Cristal energético extraído del dungeon. Emite una luz violeta inquietante."
+  },
+  "arena_toxica": {
+    "id": "arena_toxica", "name": "Arena Tóxica", "type": "material",
+    "color": [200, 175, 50], "stackable": true, "max_stack": 99,
+    "desc": "Arena saturada de compuestos químicos del desierto. Ingrediente alquímico."
+  },
+  "madera_reforzada": {
+    "id": "madera_reforzada", "name": "Madera Reforzada", "type": "material",
+    "color": [110, 65, 25], "stackable": true, "max_stack": 99,
+    "desc": "Tronco del bosque impregnado de resina endurecida. Sirve para construcción."
+  },
+  "hierba_medicinal": {
+    "id": "hierba_medicinal", "name": "Hierba Medicinal", "type": "material",
+    "color": [50, 210, 85], "stackable": true, "max_stack": 99,
+    "desc": "Planta del bosque con propiedades curativas. El Alquimista la necesita."
+  },
+  "nucleo_devorador": {
+    "id": "nucleo_devorador", "name": "Núcleo del Devorador", "type": "material",
+    "color": [255, 55, 55], "stackable": true, "max_stack": 5,
+    "desc": "Núcleo de energía pura extraído del gran jefe. Extremadamente raro y valioso."
   }
 }

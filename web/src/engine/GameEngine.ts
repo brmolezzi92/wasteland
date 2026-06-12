@@ -1,5 +1,5 @@
 import { Application, Container, Sprite, Graphics, Text, Assets, Texture, Rectangle } from 'pixi.js';
-import { TileMap, TILE, TILE_SPRITE, TILE_COLOR, SPAWN } from './tilemap';
+import { TileMap, TILE, TILE_SPRITE, TILE_COLOR, SPAWN, ZONE } from './tilemap';
 import { CLASSES, SPELLS, ITEMS } from '../data';
 
 const DAMAGE_MULT: Record<string, number> = {
@@ -28,16 +28,21 @@ interface SpriteCfg { idle: AnimCfg; run: AnimCfg; }
 
 const SPRITE_CFG: Record<string, SpriteCfg> = {
   // Jugador
-  player:            { idle: { key: 'player_idle',       frames: 4, size: 64 }, run: { key: 'player_run',       frames: 6, size: 64 } },
-  // Enemigos
-  'Bandido Tirador': { idle: { key: 'orc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'orc_rogue_run',    frames: 6, size: 64 } },
-  'Bandido Bruto':   { idle: { key: 'orc_warrior_idle',  frames: 4, size: 32 }, run: { key: 'orc_warrior_run',  frames: 6, size: 64 } },
-  'Torreta':         { idle: { key: 'skel_warrior_idle', frames: 4, size: 32 }, run: { key: 'skel_warrior_run', frames: 6, size: 64 } },
-  'El Devorador':    { idle: { key: 'orc_idle',          frames: 4, size: 32 }, run: { key: 'orc_run',          frames: 6, size: 64 } },
+  player:              { idle: { key: 'player_idle',       frames: 4, size: 64 }, run: { key: 'player_run',        frames: 6, size: 64 } },
+  // Enemigos mundo abierto
+  'Bandido Tirador':   { idle: { key: 'orc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'orc_rogue_run',     frames: 6, size: 64 } },
+  'Bandido Bruto':     { idle: { key: 'orc_warrior_idle',  frames: 4, size: 32 }, run: { key: 'orc_warrior_run',   frames: 6, size: 64 } },
+  'Torreta':           { idle: { key: 'skel_warrior_idle', frames: 4, size: 32 }, run: { key: 'skel_warrior_run',  frames: 6, size: 64 } },
+  'El Devorador':      { idle: { key: 'orc_idle',          frames: 4, size: 32 }, run: { key: 'orc_run',           frames: 6, size: 64 } },
+  // Enemigo dungeon
+  'Chamán Corrupto':   { idle: { key: 'orc_shaman_idle',   frames: 4, size: 32 }, run: { key: 'orc_shaman_run',   frames: 6, size: 64 } },
   // NPCs
-  'Guardia':         { idle: { key: 'npc_knight_idle',   frames: 4, size: 32 }, run: { key: 'npc_knight_run',   frames: 6, size: 64 } },
-  'Explorador':      { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_idle',   frames: 4, size: 32 } },
-  'Alquimista':      { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_idle', frames: 4, size: 32 } },
+  'Guardia':           { idle: { key: 'npc_knight_idle',   frames: 4, size: 32 }, run: { key: 'npc_knight_run',   frames: 6, size: 64 } },
+  'Explorador':        { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_idle',   frames: 4, size: 32 } },
+  'Alquimista':        { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_idle', frames: 4, size: 32 } },
+  'Comandante':        { idle: { key: 'npc_knight_idle',   frames: 4, size: 32 }, run: { key: 'npc_knight_run',   frames: 6, size: 64 } },
+  'Mecánico':          { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_idle', frames: 4, size: 32 } },
+  'Mercader':          { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_idle',   frames: 4, size: 32 } },
 };
 
 const MOVE_KEYS: Record<string, [number, number]> = {
@@ -171,7 +176,7 @@ export class GameEngine {
   constructor(classId: string) {
     this.classId = classId;
     this.cls = CLASSES[classId];
-    this.map = new TileMap(90, 80, 7);
+    this.map = new TileMap(100, 500, 7);
     this.app = new Application();
   }
 
@@ -193,7 +198,7 @@ export class GameEngine {
     this.buildTiles();
     this.buildGrid();
     this.spawnEntities();
-    this.spawnScrap();
+    this.spawnGroundItems();
 
     // Input
     window.addEventListener('keydown', this.onKeyDown);
@@ -218,6 +223,7 @@ export class GameEngine {
       ['orc_warrior_idle',  4, 32], ['orc_warrior_run',  6, 64],
       ['skel_warrior_idle', 4, 32], ['skel_warrior_run', 6, 64],
       ['orc_idle', 4, 32], ['orc_run', 6, 64],
+      ['orc_shaman_idle', 4, 32],   ['orc_shaman_run', 6, 64],
       ['npc_knight_idle',  4, 32], ['npc_knight_run',  6, 64],
       ['npc_rogue_idle',   4, 32],
       ['npc_wizzard_idle', 4, 32],
@@ -325,9 +331,8 @@ export class GameEngine {
     this.classOffset = CLASS_OFFSET[this.classId] || { x: 0, y: 0 };
 
     // NPCs en la base del jugador
-    const NPC_NAMES: Record<string, string> = { knight: 'Guardia', rogue: 'Explorador', wizzard: 'Alquimista' };
-    this.npcs = SPAWN.npcs.map(({ tx, ty, kind }) =>
-      this.makeEntity('npc', NPC_NAMES[kind], tx, ty, '', 999, 1)
+    this.npcs = SPAWN.npcs.map(({ tx, ty, name }) =>
+      this.makeEntity('npc', name, tx, ty, '', 999, 1)
     );
 
     // Enemigos en mundo abierto + fortaleza
@@ -348,19 +353,27 @@ export class GameEngine {
   }
 
   // ── ground items ──────────────────────────────────────────────────────────
-  spawnScrap() {
-    const { tx: cx, ty: cy } = SPAWN.player;
-    let placed = 0, attempts = 0;
-    while (placed < 40 && attempts < 5000) {
-      attempts++;
-      const tx = Math.floor(Math.random() * this.map.width);
-      const ty = Math.floor(Math.random() * this.map.height);
-      if (this.map.isSolid(tx, ty)) continue;
-      if (Math.hypot(tx - cx, ty - cy) < 5) continue;
-      const occupied = [this.player, ...this.enemies, ...this.npcs].some(e => e.tileX === tx && e.tileY === ty);
-      if (occupied) continue;
-      this.groundItems.push({ itemId: 'scrap', qty: 1, tileX: tx, tileY: ty, t: Math.random() * Math.PI * 2 });
-      placed++;
+  spawnGroundItems() {
+    const zoneItems: { y0: number; y1: number; items: string[]; count: number }[] = [
+      { y0: ZONE.ENEMY_BASE.y0,  y1: ZONE.ENEMY_BASE.y1,  items: ['placa_ia'],                         count: 12 },
+      { y0: ZONE.DUNGEON.y0,     y1: ZONE.DUNGEON.y1,      items: ['cristal_corrompido'],               count: 18 },
+      { y0: ZONE.DESERT.y0,      y1: ZONE.DESERT.y1,       items: ['arena_toxica', 'scrap'],            count: 20 },
+      { y0: ZONE.FOREST.y0,      y1: ZONE.FOREST.y1,       items: ['madera_reforzada', 'hierba_medicinal'], count: 22 },
+      { y0: ZONE.PLAYER_BASE.y0, y1: ZONE.PLAYER_BASE.y1,  items: ['scrap'],                            count: 8  },
+    ];
+    for (const zone of zoneItems) {
+      let placed = 0, attempts = 0;
+      while (placed < zone.count && attempts < 3000) {
+        attempts++;
+        const tx = Math.floor(Math.random() * this.map.width);
+        const ty = zone.y0 + Math.floor(Math.random() * (zone.y1 - zone.y0 + 1));
+        if (this.map.isSolid(tx, ty)) continue;
+        const occupied = [this.player, ...this.enemies, ...this.npcs].some(e => e.tileX === tx && e.tileY === ty);
+        if (occupied) continue;
+        const itemId = zone.items[Math.floor(Math.random() * zone.items.length)];
+        this.groundItems.push({ itemId, qty: 1, tileX: tx, tileY: ty, t: Math.random() * Math.PI * 2 });
+        placed++;
+      }
     }
   }
 
@@ -454,7 +467,15 @@ export class GameEngine {
       }
       const npc = this.npcs.find(n => n.alive && n.tileX === tx && n.tileY === ty);
       if (npc) {
-        this.addLog(`${npc.name} — HP: ${npc.hp}/${npc.maxHp} — ✦ Pacífico`, '#78d25a');
+        const NPC_DIALOGUE: Record<string, string> = {
+          'Comandante':  '📋 "Avanza al norte y neutraliza la Base IA. Trae una Placa IA como prueba."',
+          'Explorador':  '🗺 "El dungeon esconde peligros y Cristales Corrompidos. Ve preparado."',
+          'Alquimista':  '⚗ "Necesito Hierba Medicinal del bosque para preparar mis pociones."',
+          'Mecánico':    '🔧 "Con Placas IA puedo mejorar tu equipo. Consígueme 5."',
+          'Mercader':    '💰 "Compro materiales: Scrap, Arena Tóxica, Madera. ¿Qué traes?"',
+        };
+        const line = NPC_DIALOGUE[npc.name] ?? `${npc.name} — ✦ Pacífico`;
+        this.addLog(line, '#78d25a');
         return;
       }
       return;
