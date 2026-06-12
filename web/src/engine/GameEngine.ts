@@ -34,15 +34,18 @@ const SPRITE_CFG: Record<string, SpriteCfg> = {
   'Bandido Bruto':     { idle: { key: 'orc_warrior_idle',  frames: 4, size: 32 }, run: { key: 'orc_warrior_run',   frames: 6, size: 64 } },
   'Torreta':           { idle: { key: 'skel_warrior_idle', frames: 4, size: 32 }, run: { key: 'skel_warrior_run',  frames: 6, size: 64 } },
   'El Devorador':      { idle: { key: 'orc_idle',          frames: 4, size: 32 }, run: { key: 'orc_run',           frames: 6, size: 64 } },
-  // Enemigo dungeon
+  // Enemigos dungeon
   'Chamán Corrupto':   { idle: { key: 'orc_shaman_idle',   frames: 4, size: 32 }, run: { key: 'orc_shaman_run',   frames: 6, size: 64 } },
+  'Esqueleto Base':    { idle: { key: 'skel_base_idle',    frames: 4, size: 32 }, run: { key: 'skel_base_run',    frames: 6, size: 64 } },
+  'Esqueleto Mago':    { idle: { key: 'skel_mage_idle',    frames: 4, size: 32 }, run: { key: 'skel_mage_run',    frames: 6, size: 64 } },
+  'Esqueleto Rogue':   { idle: { key: 'skel_rogue_idle',   frames: 4, size: 32 }, run: { key: 'skel_rogue_run',   frames: 6, size: 64 } },
   // NPCs
   'Guardia':           { idle: { key: 'npc_knight_idle',   frames: 4, size: 32 }, run: { key: 'npc_knight_run',   frames: 6, size: 64 } },
-  'Explorador':        { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_idle',   frames: 4, size: 32 } },
-  'Alquimista':        { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_idle', frames: 4, size: 32 } },
+  'Explorador':        { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_run',    frames: 6, size: 64 } },
+  'Alquimista':        { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_run',  frames: 6, size: 64 } },
   'Comandante':        { idle: { key: 'npc_knight_idle',   frames: 4, size: 32 }, run: { key: 'npc_knight_run',   frames: 6, size: 64 } },
-  'Mecánico':          { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_idle', frames: 4, size: 32 } },
-  'Mercader':          { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_idle',   frames: 4, size: 32 } },
+  'Mecánico':          { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_run',  frames: 6, size: 64 } },
+  'Mercader':          { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_run',    frames: 6, size: 64 } },
 };
 
 const MOVE_KEYS: Record<string, [number, number]> = {
@@ -156,6 +159,8 @@ export class GameEngine {
   isHost = true;
   // Non-host: called when player hits an enemy; relays the attack to host
   onHitEnemy: ((idx: number, dmg: number, cc: CC | null, ccDur: number) => void) | null = null;
+  // Any player: called when they pick up an item (non-host relays to host to remove from world)
+  onPickup: ((tileX: number, tileY: number) => void) | null = null;
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -224,9 +229,12 @@ export class GameEngine {
       ['skel_warrior_idle', 4, 32], ['skel_warrior_run', 6, 64],
       ['orc_idle', 4, 32], ['orc_run', 6, 64],
       ['orc_shaman_idle', 4, 32],   ['orc_shaman_run', 6, 64],
+      ['skel_base_idle',  4, 32],   ['skel_base_run',  6, 64],
+      ['skel_mage_idle',  4, 32],   ['skel_mage_run',  6, 64],
+      ['skel_rogue_idle', 4, 32],   ['skel_rogue_run', 6, 64],
       ['npc_knight_idle',  4, 32], ['npc_knight_run',  6, 64],
-      ['npc_rogue_idle',   4, 32],
-      ['npc_wizzard_idle', 4, 32],
+      ['npc_rogue_idle',   4, 32], ['npc_rogue_run',   6, 64],
+      ['npc_wizzard_idle', 4, 32], ['npc_wizzard_run', 6, 64],
     ];
     for (const [key, frames, size] of sheets) {
       try {
@@ -236,6 +244,19 @@ export class GameEngine {
           sliced.push(new Texture({ source: base.source, frame: new Rectangle(i * size, 0, size, size) }));
         this.animFrames[key] = sliced;
       } catch { /* sprite missing, will fall back to colored box */ }
+    }
+    // Explosion spritesheets: explosion_sm = 8 frames 32px, explosion_lg = 8 frames 48px
+    const exSheets: [string, number, number][] = [
+      ['explosion_sm', 8, 32], ['explosion_lg', 8, 48],
+    ];
+    for (const [key, frames, size] of exSheets) {
+      try {
+        const base: Texture = await Assets.load(`/assets/effects/${key}.png`);
+        const sliced: Texture[] = [];
+        for (let i = 0; i < frames; i++)
+          sliced.push(new Texture({ source: base.source, frame: new Rectangle(i * size, 0, size, size) }));
+        this.animFrames[key] = sliced;
+      } catch { /* fallback to graphic circles */ }
     }
   }
 
@@ -288,6 +309,8 @@ export class GameEngine {
       const FALLBACK_COLORS: Record<string, number> = {
         'Bandido Tirador': 0xcc7722, 'Bandido Bruto': 0x882211,
         'Torreta': 0x335566, 'El Devorador': 0x770022,
+        'Chamán Corrupto': 0x6622aa, 'Esqueleto Base': 0xccccaa,
+        'Esqueleto Mago': 0x4488ff, 'Esqueleto Rogue': 0xaaccaa,
       };
       let boxColor = kind === 'player'
         ? col((CLASSES[this.classId]?.color ?? [68, 136, 204]) as [number, number, number])
@@ -387,6 +410,26 @@ export class GameEngine {
     this.addItemToInventory(gi.itemId, gi.qty);
     const name = ITEMS[gi.itemId]?.name ?? gi.itemId;
     this.floatText(p.visX + TILE / 2, p.visY, `+${gi.qty} ${name}`, 0xffe080);
+    // Notify host to remove from authoritative world state
+    this.onPickup?.(gi.tileX, gi.tileY);
+  }
+
+  // Host: remove item picked up by a remote player
+  applyRemotePickup(tileX: number, tileY: number) {
+    const idx = this.groundItems.findIndex(gi => gi.tileX === tileX && gi.tileY === tileY);
+    if (idx !== -1) this.groundItems.splice(idx, 1);
+  }
+
+  // Returns compact ground items state for broadcast
+  getGroundItemsState(): [string, number, number, number][] {
+    return this.groundItems.map(gi => [gi.itemId, gi.qty, gi.tileX, gi.tileY]);
+  }
+
+  // Non-host: replace ground items from host broadcast
+  applyGroundItemsState(items: [string, number, number, number][]) {
+    this.groundItems = items.map(([itemId, qty, tileX, tileY]) => ({
+      itemId, qty, tileX, tileY, t: Math.random() * Math.PI * 2,
+    }));
   }
 
   addItemToInventory(itemId: string, qty: number) {
@@ -882,12 +925,30 @@ export class GameEngine {
     }});
   }
   explosion(x: number, y: number, c: number, max: number) {
-    const g = new Graphics(); this.fxLayer.addChild(g); let t = 0; const dur = 0.38;
-    this.effects.push({ obj: g, update: (dt) => {
-      t += dt; const k = t / dur; const r = Math.max(1, max * k);
-      g.clear().circle(x, y, r).stroke({ width: Math.max(1, 5 * (1 - k)), color: c, alpha: 1 - k });
-      return t >= dur;
-    }});
+    const key = max >= 60 ? 'explosion_lg' : 'explosion_sm';
+    const frames = this.animFrames[key];
+    if (frames?.length) {
+      const scale = max >= 60 ? 2.2 : 1.6;
+      const spr = new Sprite(frames[0]);
+      spr.anchor.set(0.5); spr.position.set(x, y); spr.scale.set(scale);
+      this.fxLayer.addChild(spr);
+      let t = 0; const dur = 0.42; const fps = frames.length / dur;
+      this.effects.push({ obj: spr, update: (dt) => {
+        t += dt;
+        const fi = Math.min(frames.length - 1, Math.floor(t * fps));
+        spr.texture = frames[fi];
+        spr.alpha = 1 - t / dur;
+        return t >= dur;
+      }});
+    } else {
+      // Fallback círculo si el sprite no cargó
+      const g = new Graphics(); this.fxLayer.addChild(g); let t = 0; const dur = 0.38;
+      this.effects.push({ obj: g, update: (dt) => {
+        t += dt; const k = t / dur; const r = Math.max(1, max * k);
+        g.clear().circle(x, y, r).stroke({ width: Math.max(1, 5 * (1 - k)), color: c, alpha: 1 - k });
+        return t >= dur;
+      }});
+    }
   }
   aoeIndicator(x: number, y: number, c: number, max: number) {
     const cells = this.tilesInRadius(x, y, max);   // rasterizado cuadrado

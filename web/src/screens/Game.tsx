@@ -150,7 +150,12 @@ export default function Game() {
         if (i >= 0) presenceIds.splice(i, 1);
         updateHost();
       },
-      (states) => { if (!engine.isHost) engine.applyEnemyState(states as any); },
+      (states, items) => {
+        if (!engine.isHost) {
+          engine.applyEnemyState(states as any);
+          if (items) engine.applyGroundItemsState(items as any);
+        }
+      },
       (ids) => {
         presenceIds.length = 0;
         presenceIds.push(...ids.filter(id => id !== authUserId!));
@@ -165,7 +170,11 @@ export default function Game() {
             (evt.cc as any) ?? null,
             (evt.ccDur as number) ?? 0,
           );
-          broadcastEnemyState(engine.getEnemyState());
+          broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState());
+        }
+        // Host: un jugador remoto recogió un item → eliminar del mundo autoritativo
+        if (evt.type === 'pickup' && engine.isHost) {
+          engine.applyRemotePickup(evt.tileX as number, evt.tileY as number);
         }
       },
     );
@@ -196,6 +205,10 @@ export default function Game() {
         engine.onHitEnemy = (idx, dmg, cc, ccDur) => {
           broadcastEvent({ type: 'atk', idx, dmg, cc, ccDur });
         };
+        // Cualquier jugador: notifica pickup para que el host elimine del mundo
+        engine.onPickup = (tileX, tileY) => {
+          broadcastEvent({ type: 'pickup', tileX, tileY });
+        };
         let last = 0;
         const loop = (t: number) => {
           if (!alive) return;
@@ -224,11 +237,11 @@ export default function Game() {
             });
           }
 
-          // Enemy state broadcast (host only)
+          // Enemy state broadcast (host only) — incluye ground items para sync
           enemyBroadcastTimer += dt;
           if (enemyBroadcastTimer >= ENEMY_BROADCAST_INTERVAL) {
             enemyBroadcastTimer = 0;
-            if (engine.isHost) broadcastEnemyState(engine.getEnemyState());
+            if (engine.isHost) broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState());
           }
 
           // Ping every 5s
