@@ -249,8 +249,19 @@ export async function signInWithUsername(username: string, password: string) {
   return supabase.auth.signInWithPassword({ email: toFakeEmail(username), password });
 }
 
-export async function signUpWithUsername(username: string, password: string) {
-  return supabase.auth.signUp({ email: toFakeEmail(username), password });
+// Calls Edge Function — no email sent, bypasses Supabase Auth rate limits
+export async function signUpWithUsername(username: string, password: string): Promise<{ error?: string }> {
+  const res = await fetch(
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/register`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    },
+  );
+  const json = await res.json();
+  if (!res.ok) return { error: json.error ?? 'Error al registrar' };
+  return {};
 }
 
 export async function signOut() {

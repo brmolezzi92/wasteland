@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { signInWithUsername, signUpWithUsername, isUsernameTaken, createProfile } from '../lib/db';
-import { supabase } from '../lib/supabase';
+import { signInWithUsername, signUpWithUsername, isUsernameTaken } from '../lib/db';
 import './LoginScreen.css';
 
 type Mode = 'login' | 'register';
@@ -45,18 +44,12 @@ export default function LoginScreen() {
       const taken = await isUsernameTaken(u);
       if (taken) { setError('Ese usuario ya está en uso'); setLoading(false); return; }
 
-      const { data, error } = await signUpWithUsername(u, password);
-      if (error) { setError(error.message); setLoading(false); return; }
+      const { error } = await signUpWithUsername(u, password);
+      if (error) { setError(error); setLoading(false); return; }
 
-      // Create profile immediately with the chosen username
-      if (data.user) await createProfile(data.user.id, u);
-
-      // Force session load since email confirmation is off
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        // signInWithPassword right after signUp to ensure session
-        await signInWithUsername(u, password);
-      }
+      // Sign in immediately after registration (Edge Function created user, no email sent)
+      const { error: loginErr } = await signInWithUsername(u, password);
+      if (loginErr) { setError(loginErr.message); setLoading(false); return; }
       // App.tsx onAuthStateChange will route to menu
     }
   };
