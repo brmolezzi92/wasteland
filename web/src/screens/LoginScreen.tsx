@@ -1,40 +1,63 @@
 import { useState } from 'react';
-import { signInWithEmail, signUpWithEmail } from '../lib/db';
+import { signInWithUsername, signUpWithUsername, isUsernameTaken, createProfile } from '../lib/db';
+import { supabase } from '../lib/supabase';
 import './LoginScreen.css';
 
 type Mode = 'login' | 'register';
 
 export default function LoginScreen() {
   const [mode,     setMode]     = useState<Mode>('login');
-  const [email,    setEmail]    = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirm,  setConfirm]  = useState('');
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState<string | null>(null);
-  const [info,     setInfo]     = useState<string | null>(null);
 
-  const reset = (m: Mode) => { setMode(m); setError(null); setInfo(null); };
+  const reset = (m: Mode) => { setMode(m); setError(null); };
+
+  const validate = () => {
+    if (!username.trim() || !password) return 'Completá todos los campos';
+    if (!/^[a-zA-Z0-9_]{3,18}$/.test(username.trim())) return 'Usuario: 3-18 caracteres, solo letras, números y _';
+    if (mode === 'register') {
+      if (password.length < 6) return 'La contraseña debe tener al menos 6 caracteres';
+      if (password !== confirm) return 'Las contraseñas no coinciden';
+    }
+    return null;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null); setInfo(null);
-
-    if (!email.trim() || !password) { setError('Completá todos los campos'); return; }
-    if (mode === 'register') {
-      if (password.length < 6) { setError('La contraseña debe tener al menos 6 caracteres'); return; }
-      if (password !== confirm) { setError('Las contraseñas no coinciden'); return; }
-    }
+    setError(null);
+    const err = validate();
+    if (err) { setError(err); return; }
 
     setLoading(true);
+    const u = username.trim();
 
     if (mode === 'login') {
-      const { error } = await signInWithEmail(email.trim(), password);
-      if (error) { setError(error.message === 'Invalid login credentials' ? 'Email o contraseña incorrectos' : error.message); setLoading(false); }
+      const { error } = await signInWithUsername(u, password);
+      if (error) {
+        setError('Usuario o contraseña incorrectos');
+        setLoading(false);
+      }
       // On success → App.tsx onAuthStateChange handles routing
     } else {
-      const { error } = await signUpWithEmail(email.trim(), password);
-      if (error) { setError(error.message); setLoading(false); }
-      else { setInfo('¡Cuenta creada! Revisá tu email para confirmar y luego ingresá.'); setLoading(false); reset('login'); }
+      const taken = await isUsernameTaken(u);
+      if (taken) { setError('Ese usuario ya está en uso'); setLoading(false); return; }
+
+      const { data, error } = await signUpWithUsername(u, password);
+      if (error) { setError(error.message); setLoading(false); return; }
+
+      // Create profile immediately with the chosen username
+      if (data.user) await createProfile(data.user.id, u);
+
+      // Force session load since email confirmation is off
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        // signInWithPassword right after signUp to ensure session
+        await signInWithUsername(u, password);
+      }
+      // App.tsx onAuthStateChange will route to menu
     }
   };
 
@@ -57,14 +80,14 @@ export default function LoginScreen() {
 
           <form className="login__form" onSubmit={handleSubmit}>
             <div className="login__field">
-              <label className="login__label dim">EMAIL</label>
+              <label className="login__label dim">USUARIO</label>
               <input
                 className="login__input"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="usuario@email.com"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder="tu_nombre"
                 disabled={loading}
               />
             </div>
@@ -98,7 +121,6 @@ export default function LoginScreen() {
             )}
 
             {error && <p className="login__error">{error}</p>}
-            {info  && <p className="login__info">{info}</p>}
 
             <button
               type="submit"
@@ -110,9 +132,7 @@ export default function LoginScreen() {
           </form>
         </div>
 
-        <div className="login__footer dim">
-          v0.1 · ALPHA · {mode === 'login' ? '¿No tenés cuenta? Registrate arriba' : 'Ya tenés cuenta? Ingresá arriba'}
-        </div>
+        <div className="login__footer dim">v0.1 · ALPHA</div>
       </div>
     </div>
   );

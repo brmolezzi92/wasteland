@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { loadData } from './data';
 import { supabase } from './lib/supabase';
-import { getProfile, createProfile, getCharacters, getFriends, getPendingRequests } from './lib/db';
+import { getProfile, getCharacters, getFriends, getPendingRequests } from './lib/db';
 import LoginScreen from './screens/LoginScreen';
 import SetupScreen from './screens/SetupScreen';
 import MainMenu from './screens/MainMenu';
@@ -28,17 +28,9 @@ async function loadUserData(userId: string, email: string) {
   const store = useStore.getState();
   store.setAuth(userId, email);
 
-  let profile = await getProfile(userId);
-  if (!profile) {
-    // First login — auto-generate username from email prefix
-    const base = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '').slice(0, 18) || 'Survivor';
-    const username = base + Math.floor(Math.random() * 9000 + 1000);
-    profile = await createProfile(userId, username);
-    if (!profile) { store.setScreen('login'); return; }
-    store.setScreen('setup'); // show username picker
-  } else {
-    store.setScreen('menu');
-  }
+  const profile = await getProfile(userId);
+  if (!profile) { store.setScreen('login'); return; }
+  store.setScreen('menu');
 
   store.setProfile(profile);
   const [chars, friends, pending] = await Promise.all([

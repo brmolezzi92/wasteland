@@ -243,12 +243,14 @@ export function subscribeChatMessages(
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
-export async function signInWithEmail(email: string, password: string) {
-  return supabase.auth.signInWithPassword({ email, password });
+const toFakeEmail = (username: string) => `${username.toLowerCase()}@wasteland.game`;
+
+export async function signInWithUsername(username: string, password: string) {
+  return supabase.auth.signInWithPassword({ email: toFakeEmail(username), password });
 }
 
-export async function signUpWithEmail(email: string, password: string) {
-  return supabase.auth.signUp({ email, password });
+export async function signUpWithUsername(username: string, password: string) {
+  return supabase.auth.signUp({ email: toFakeEmail(username), password });
 }
 
 export async function signOut() {
