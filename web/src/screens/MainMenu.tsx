@@ -3,6 +3,7 @@ import { useStore, avgElo } from '../store';
 import { CLASSES, eloToRank, rgb } from '../data';
 import { signOut, sendFriendRequest, acceptFriendRequest, removeFriend, getFriends, getPendingRequests, joinQueue, leaveQueue, subscribeQueueStatus, checkQueueMatch } from '../lib/db';
 import type { DbCharacter, DbFriend, DbFriendRequest } from '../lib/db';
+import { getServerUrl, setServerUrl } from '../lib/netClient';
 import './MainMenu.css';
 
 // ── static news mock (reemplazar con DB cuando haya tabla news) ────────────────
@@ -135,6 +136,17 @@ export default function MainMenu() {
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [queueMode,     setQueueMode]    = useState<string | null>(null);
   const [queueSec,      setQueueSec]     = useState(0);
+  const [serverUrl,     setSrvUrl]       = useState(getServerUrl());
+
+  const editServer = () => {
+    const url = window.prompt(
+      'URL del servidor de juego.\n\nEjemplo (túnel a tu PC): https://xxxx.trycloudflare.com\nVacío = localhost:8787 (solo tu PC).',
+      serverUrl,
+    );
+    if (url === null) return;
+    setServerUrl(url);
+    setSrvUrl(getServerUrl());
+  };
   const queueRef = useRef<ReturnType<typeof import('../lib/db').subscribeQueueStatus> | null>(null);
   const queueTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -237,6 +249,9 @@ export default function MainMenu() {
         </nav>
 
         <div className="hub-user">
+          <button className="server-chip" onClick={editServer} title="Configurar servidor de juego">
+            🖧 {serverUrl.replace(/^https?:\/\//, '')}
+          </button>
           <span className="online-chip"><i className="online-dot" /> ONLINE</span>
           {profile && rank && (
             <div className="hub-usercard">

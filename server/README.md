@@ -51,23 +51,43 @@ npm run tui        # tabla viva en la terminal (mismos datos)
 ```
 
 ## Probar con un amigo (túnel a internet)
+
+Como el server corre en tu PC, tu amigo tiene que llegar a tu máquina por internet.
+Un túnel le da a tu `localhost:8787` una URL pública `https://...`.
+
 1. Levantá el server: `npm run dev`
 2. En otra terminal, abrí el túnel:
    ```bash
    npm run tunnel
    ```
-   Usa **cloudflared** (sin cuenta) y cae a **ngrok** si no está. Imprime una URL
-   `https://...`.
-3. En el cliente (`../web/.env.local`) seteá esa URL:
+   Usa **cloudflared** (sin cuenta) y cae a **ngrok** si no está. Te imprime una URL
+   tipo `https://xxxx.trycloudflare.com`. **Esa es la URL de tu server.**
+3. **Pasale a tu amigo la URL del juego con el server como parámetro:**
    ```
-   VITE_SERVER_URL=https://xxxx.trycloudflare.com
+   https://TU-APP.vercel.app/?server=https://xxxx.trycloudflare.com
    ```
-4. Reiniciá el cliente (`cd ../web && npm run dev`). Vos y tu amigo entran por la
-   web del cliente; ambos pegan al servidor de tu PC.
+   El `?server=` hace que su navegador apunte a TU PC (no a su localhost). Queda
+   guardado, así que la próxima vez entra directo. Vos hacé lo mismo (o pegá la URL
+   en el chip 🖧 del menú).
+4. Listo: los dos pegan al server de tu PC. El **ping** que vean es el real
+   (tu amigo en España verá ~200-250ms hacia Buenos Aires — eso es lo correcto;
+   si ve `0ms` es que NO está conectado a tu PC).
+
+> ⚠ La URL del túnel cambia cada vez que reabrís `npm run tunnel`. Por eso conviene
+> pasar la URL por `?server=` o por el chip del menú, en vez de hardcodearla.
+
+> El chip **🖧** arriba en el menú muestra a qué server estás apuntando y te deja
+> cambiarlo. Vacío = `localhost:8787` (solo tu PC, para probar vos solo).
 
 > Instalá un túnel si no tenés:
 > cloudflared — https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
 > ngrok — https://ngrok.com/download
+
+## ¿Y cuando quieras un server de verdad (sin tu PC)?
+Esto sigue siendo "tu PC + túnel": se apaga cuando apagás la compu. Para un server
+24/7 en la nube (Fly.io / Railway / un VPS) el código ya está listo para desplegar
+(usa `PORT` del entorno y bindea a `0.0.0.0`). Solo hay que crear la cuenta del
+hosting y desplegar; después seteás esa URL fija en el cliente y listo.
 
 ## Tooling de prueba
 ```bash

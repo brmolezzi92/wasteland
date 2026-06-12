@@ -47,15 +47,16 @@ export function setupGameNamespace(ns: Namespace, world: World, duels: DuelManag
     socket.on('matchmake', () => { if (userId) duels.enqueue(userId); });
     socket.on('matchmake_cancel', () => { if (userId) duels.dequeue(userId); });
 
-    // Ping: server-initiated cada 2s; el cliente responde 'pong' con el mismo t.
-    socket.on('pong', (m: { t: number }) => {
+    // Ping: el cliente inicia ('cping'), el server hace eco ('cpong') para que
+    // el cliente calcule su RTT con un solo reloj. El cliente nos reporta el RTT
+    // medido ('rtt') para mostrarlo en la consola admin.
+    socket.on('cping', (m: { t: number }) => socket.emit('cpong', { t: m.t }));
+    socket.on('rtt', (m: { ms: number }) => {
       const p = userId ? world.getByUser(userId) : null;
-      if (p) p.ping = Date.now() - m.t;
+      if (p) p.ping = Math.max(0, Math.round(m.ms));
     });
-    const pingTimer = setInterval(() => socket.emit('ping', { t: Date.now() }), 2000);
 
     socket.on('disconnect', () => {
-      clearInterval(pingTimer);
       if (userId) { duels.handleDisconnect(userId); world.removePlayerBySocket(socket.id); }
     });
   });

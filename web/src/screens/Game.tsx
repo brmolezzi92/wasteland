@@ -144,9 +144,12 @@ export default function Game() {
         engine.applyForceZone(zoneIdx, tx, ty);
         tileCanvasRef.current = buildTileCanvas(engine.map);
       },
-      onConnChange: (connected) =>
-        engine.addLog(connected ? '🟢 Conectado al servidor' : '🔴 Servidor desconectado',
-          connected ? '#66e06a' : '#ff4444'),
+      onConnChange: (connected) => {
+        engine.connected = connected;
+        engine.addLog(
+          connected ? `🟢 Conectado al servidor (${net.serverUrl})` : '🔴 Sin conexión al servidor',
+          connected ? '#66e06a' : '#ff4444');
+      },
       onPing: (ms) => { pingRef.current = ms; engine.ping = ms; },
       onDuel: (m) => engine.applyDuel(m),
     });
@@ -222,12 +225,14 @@ export default function Game() {
 
       {err && <pre className="game__error">INIT ERROR: {err}</pre>}
 
-      {/* ── FPS / PING overlay ── */}
+      {/* ── FPS / PING / CONEXIÓN overlay ── */}
       {hud && (
         <div className="game__perf">
+          <span className={hud.connected ? 'perf-ok' : 'perf-bad'}>{hud.connected ? '🟢 online' : '🔴 sin server'}</span>
+          <span className="perf-sep">·</span>
           <span className={hud.fps >= 55 ? 'perf-ok' : hud.fps >= 30 ? 'perf-warn' : 'perf-bad'}>{hud.fps} FPS</span>
           <span className="perf-sep">·</span>
-          <span className={hud.ping < 100 ? 'perf-ok' : hud.ping < 200 ? 'perf-warn' : 'perf-bad'}>{hud.ping} ms</span>
+          <span className={!hud.connected ? 'perf-bad' : hud.ping < 100 ? 'perf-ok' : hud.ping < 200 ? 'perf-warn' : 'perf-bad'}>{hud.connected ? `${hud.ping} ms` : '—'}</span>
         </div>
       )}
 

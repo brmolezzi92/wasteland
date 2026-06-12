@@ -103,7 +103,7 @@ export interface HudState {
   isGhost: boolean; ghostTimer: number; cc: CC; ccTimer: number;
   isInvisible: boolean;
   logs: LogEntry[];
-  fps: number; ping: number;
+  fps: number; ping: number; connected: boolean;
   zoneName: string; zoneIdx: number;
   duelState: 'idle' | 'searching' | 'in_duel'; duelOpponent: string;
   minimap: {
@@ -160,6 +160,7 @@ export class GameEngine {
 
   remotePlayers = new Map<string, RemotePEntry>();
   fps = 0; ping = 0;
+  connected = false;
   myUserId = '';
 
   // ── Intents hacia el servidor (los conecta Game.tsx con NetClient) ──────────
@@ -1230,7 +1231,7 @@ export class GameEngine {
       isGhost: p.isGhost, ghostTimer: p.ghostTimer, cc: p.cc, ccTimer: p.ccTimer,
       isInvisible: p.isInvisible,
       logs: this.logs.slice(-8),
-      fps: Math.round(this.fps), ping: Math.round(this.ping),
+      fps: Math.round(this.fps), ping: Math.round(this.ping), connected: this.connected,
       minimap: { mapW: ZONE_W, mapH: ZONE_H, playerTx: p.tileX, playerTy: p.tileY, dots },
       zoneName: ZONE_NAMES[this.currentZone], zoneIdx: this.currentZone,
       duelState: this.duelState, duelOpponent: this.duelOpponent,

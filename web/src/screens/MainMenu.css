@@ -347,3 +347,12 @@
 }
 .hub-action-btn:hover { border-color: var(--amber); color: var(--text); }
 .hub-action-btn--exit:hover { border-color: var(--danger); color: var(--danger); }
+
+/* ── Server config chip ── */
+.server-chip {
+  background: rgba(20,16,12,.7); border: 1px solid #3a2e1e; color: #b8a888;
+  padding: 5px 10px; border-radius: 6px; font-size: 11px; font-weight: 700;
+  cursor: pointer; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; transition: all .12s;
+}
+.server-chip:hover { border-color: #e0a040; color: #f0e4cc; }

@@ -5,9 +5,30 @@ import type {
   ZoneSnapshot, FxEvent, YouUpdate, JoinedMsg, NetPlayer, CastIntent, DuelMsg,
 } from './protocol';
 
-// URL del servidor. En dev apunta a localhost; en prod/túnel se configura
-// con VITE_SERVER_URL (la URL https del túnel ngrok/cloudflared).
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:8787';
+// URL del servidor resuelta en runtime, en este orden de prioridad:
+//   1. ?server=<url> en la URL (se guarda para próximas visitas) — ideal para
+//      compartir un link a tu amigo con tu túnel actual.
+//   2. localStorage 'serverUrl' (lo que guardaste / pegaste en el menú).
+//   3. VITE_SERVER_URL del build.
+//   4. localhost:8787 (dev local).
+// Así el cliente desplegado puede apuntar a tu PC (vía túnel) SIN rebuildear.
+export function resolveServerUrl(): string {
+  try {
+    const q = new URLSearchParams(location.search).get('server');
+    if (q) { localStorage.setItem('serverUrl', q); return q.replace(/\/+$/, ''); }
+    const ls = localStorage.getItem('serverUrl');
+    if (ls) return ls.replace(/\/+$/, '');
+  } catch { /* SSR / sin window */ }
+  return (import.meta.env.VITE_SERVER_URL || 'http://localhost:8787').replace(/\/+$/, '');
+}
+
+export function setServerUrl(url: string) {
+  const clean = url.trim().replace(/\/+$/, '');
+  if (clean) localStorage.setItem('serverUrl', clean);
+  else localStorage.removeItem('serverUrl');
+}
+
+export function getServerUrl(): string { return resolveServerUrl(); }
 
 export interface NetHandlers {
   onJoined: (m: JoinedMsg) => void;
@@ -30,8 +51,12 @@ export class NetClient {
     this.handlers = handlers;
   }
 
+  serverUrl = '';
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+
   connect(join: { userId: string; username: string; classId: string; charId: string }) {
-    this.socket = io(`${SERVER_URL}/game`, {
+    this.serverUrl = resolveServerUrl();
+    this.socket = io(`${this.serverUrl}/game`, {
       transports: ['websocket'],
       reconnection: true,
       reconnectionDelay: 800,
@@ -41,8 +66,14 @@ export class NetClient {
     s.on('connect', () => {
       this.handlers.onConnChange(true);
       s.emit('join', join);
+      // Medimos el RTT desde el cliente (un solo reloj → número real).
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      const sendPing = () => s.connected && s.emit('cping', { t: Date.now() });
+      sendPing();
+      this.pingTimer = setInterval(sendPing, 2000);
     });
     s.on('disconnect', () => this.handlers.onConnChange(false));
+    s.on('connect_error', () => this.handlers.onConnChange(false));
 
     s.on('joined', (m: JoinedMsg) => this.handlers.onJoined(m));
     s.on('snapshot', (snap: ZoneSnapshot) => this.handlers.onSnapshot(snap));
@@ -53,11 +84,10 @@ export class NetClient {
       this.handlers.onForceZone(m.zoneIdx, m.tx, m.ty));
     s.on('duel', (m: DuelMsg) => this.handlers.onDuel(m));
 
-    // Ping: el server inicia, respondemos con el mismo timestamp.
-    s.on('ping', (m: { t: number }) => {
-      const now = Date.now();
-      this.ping = now - m.t;       // aprox una vía; el RTT real lo mide el server
-      s.emit('pong', { t: m.t });
+    // Ping: el server hace eco de nuestro timestamp; calculamos RTT con NUESTRO reloj.
+    s.on('cpong', (m: { t: number }) => {
+      this.ping = Date.now() - m.t;          // RTT real (sin desfase de relojes)
+      s.emit('rtt', { ms: this.ping });      // se lo reportamos al server para la consola
       this.handlers.onPing(this.ping);
     });
   }
@@ -74,6 +104,7 @@ export class NetClient {
   matchmakeCancel() { this.socket?.emit('matchmake_cancel'); }
 
   disconnect() {
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
     if (this.socket) { this.socket.disconnect(); this.socket = null; }
   }
 }
