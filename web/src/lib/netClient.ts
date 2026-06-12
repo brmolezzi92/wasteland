@@ -24,8 +24,12 @@ export function resolveServerUrl(): string {
     if (ls) return clean(ls);
   } catch { /* SSR / sin window */ }
   if (import.meta.env.VITE_SERVER_URL) return clean(import.meta.env.VITE_SERVER_URL);
-  // Solo en desarrollo local usamos localhost; en prod, sin configurar → ''.
-  return import.meta.env.DEV ? 'http://localhost:8787' : '';
+  // Dev local: vite (5173) y server (8787) son orígenes distintos → localhost:8787.
+  if (import.meta.env.DEV) return 'http://localhost:8787';
+  // Prod: por defecto el MISMO origen que sirvió la página. Cuando el server de
+  // juego sirve el cliente (a través del túnel), esto apunta al túnel — nunca a
+  // localhost. Si abrís el cliente desde otro lado (ej. Vercel), usá el chip 🖧.
+  try { return clean(location.origin); } catch { return ''; }
 }
 
 export function setServerUrl(url: string) {

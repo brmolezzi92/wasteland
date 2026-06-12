@@ -15,11 +15,23 @@ import { hasDb } from './db/supabase.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-// ── HTTP + estáticos (consola web) ──────────────────────────────────────────
+// ── HTTP + estáticos ─────────────────────────────────────────────────────────
 const app = express();
+const webDist = resolve(here, '../../web/dist');   // build del cliente (vite)
+
+// Consola admin
 app.use('/admin', express.static(resolve(here, '../public/admin')));
 app.get('/health', (_req, res) => res.json({ ok: true, tick: world.serverTick, players: world.players.size }));
-app.get('/', (_req, res) => res.redirect('/admin'));
+
+// El juego: el server también sirve el cliente buildeado. Así un amigo abre la
+// URL del túnel y obtiene el juego + el websocket desde el mismo origen (tu PC).
+app.use(express.static(webDist));
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/admin') || req.path.startsWith('/socket.io') || req.path === '/health') return next();
+  res.sendFile(resolve(webDist, 'index.html'), (err) => {
+    if (err) res.status(503).send('El cliente no está buildeado. Corré: cd web && npm run build');
+  });
+});
 
 const http = createServer(app);
 const io = new Server(http, { cors: { origin: '*' } });
@@ -79,6 +91,7 @@ http.listen(CONFIG.port, () => {
   console.log(pc.green('━'.repeat(56)));
   console.log(`  ${pc.dim('Puerto:')}      ${pc.cyan(String(CONFIG.port))}`);
   console.log(`  ${pc.dim('Tick rate:')}   ${pc.cyan(String(CONFIG.tickRate))} Hz`);
+  console.log(`  ${pc.dim('Juego:')}       ${pc.cyan(`http://localhost:${CONFIG.port}/`)}`);
   console.log(`  ${pc.dim('Consola web:')} ${pc.cyan(`http://localhost:${CONFIG.port}/admin`)}`);
   console.log(`  ${pc.dim('Admin token:')} ${pc.yellow(CONFIG.adminToken)}`);
   console.log(`  ${pc.dim('Persistencia:')} ${hasDb() ? pc.green('Supabase ON') : pc.yellow('OFF (modo prueba)')}`);

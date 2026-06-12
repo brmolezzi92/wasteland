@@ -50,37 +50,37 @@ Abrí **http://localhost:8787/admin**, pegá el `ADMIN_TOKEN` y Conectar. Vas a 
 npm run tui        # tabla viva en la terminal (mismos datos)
 ```
 
-## Probar con un amigo (túnel a internet)
+## Probar con un amigo (una sola URL)
 
-Como el server corre en tu PC, tu amigo tiene que llegar a tu máquina por internet.
-Un túnel le da a tu `localhost:8787` una URL pública `https://...`.
+El server también **sirve el juego** (el build de `web/dist`). Así tu amigo abre
+**una sola URL** —la del túnel a tu PC— y obtiene el juego + el websocket desde el
+mismo origen. Sin Vercel, sin `?server=`, sin localhost.
 
-1. Levantá el server: `npm run dev`
-2. En otra terminal, abrí el túnel:
+1. Buildeá el cliente una vez (y cada vez que cambie el código del cliente):
+   ```bash
+   cd web && npm run build
+   ```
+2. Levantá el server: `cd server && npm run dev`
+3. En otra terminal, abrí el túnel:
    ```bash
    npm run tunnel
    ```
    Usa **cloudflared** (sin cuenta) y cae a **ngrok** si no está. Te imprime una URL
-   tipo `https://xxxx.trycloudflare.com`. **Esa es la URL de tu server.**
-3. **Pasale a tu amigo la URL del juego con el server como parámetro:**
-   ```
-   https://TU-APP.vercel.app/?server=https://xxxx.trycloudflare.com
-   ```
-   El `?server=` hace que su navegador apunte a TU PC (no a su localhost). Queda
-   guardado, así que la próxima vez entra directo. Vos hacé lo mismo (o pegá la URL
-   en el chip 🖧 del menú).
-4. Listo: los dos pegan al server de tu PC. El **ping** que vean es el real
-   (tu amigo en España verá ~200-250ms hacia Buenos Aires — eso es lo correcto;
-   si ve `0ms` es que NO está conectado a tu PC).
+   tipo `https://xxxx.trycloudflare.com`.
+4. **Esa URL es el juego.** Abrila vos y pasásela a tu amigo. Los dos juegan en tu PC.
+   El **ping** es real (tu amigo en España verá ~200-250ms hacia Buenos Aires; si ve
+   `0ms` es que NO está conectado a tu PC).
 
-> ⚠ La URL del túnel cambia cada vez que reabrís `npm run tunnel`. Por eso conviene
-> pasar la URL por `?server=` o por el chip del menú, en vez de hardcodearla.
+> ⚠ La URL del quick-tunnel de cloudflared **cambia cada vez** que lo reabrís, y vive
+> solo mientras tengas server + túnel prendidos. Para una URL fija conviene un túnel
+> con nombre (cloudflared + dominio propio), un dominio estático de ngrok (gratis, 1
+> por cuenta), o desplegar el server en la nube.
 
-> El chip **🖧** arriba en el menú muestra a qué server estás apuntando y te deja
-> cambiarlo. Vacío = `localhost:8787` (solo tu PC, para probar vos solo).
+> El chip **🖧** del menú deja apuntar a otro server si abrís el cliente desde otro
+> lado (ej. Vercel). Sirviendo el cliente desde el server, no hace falta tocarlo.
 
 > Instalá un túnel si no tenés:
-> cloudflared — https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+> cloudflared — https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/  (o `winget install Cloudflare.cloudflared`)
 > ngrok — https://ngrok.com/download
 
 ## ¿Y cuando quieras un server de verdad (sin tu PC)?
