@@ -2,7 +2,10 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../store';
 import { GameEngine, type HudState } from '../engine/GameEngine';
 import { TileMap, TILE_COLOR } from '../engine/tilemap';
-import { getChatMessages, sendChatMessage, subscribeChatMessages } from '../lib/db';
+import {
+  getChatMessages, sendChatMessage, subscribeChatMessages,
+  joinWorldChannel, broadcastPosition, leaveWorldChannel,
+} from '../lib/db';
 import type { DbChatMessage } from '../lib/db';
 import './GameHud.css';
 
@@ -76,6 +79,9 @@ export default function Game() {
   const [tab, setTab]  = useState<'spells' | 'inv'>('spells');
   const lastClick      = useRef<{ slot: number; t: number }>({ slot: -1, t: 0 });
   const tileCanvasRef  = useRef<HTMLCanvasElement | null>(null);
+  const fpsRef         = useRef<number[]>([]);
+  const lastFrameRef   = useRef<number>(0);
+  const pingRef        = useRef<number>(0);
 
   // ── Chat ────────────────────────────────────────────────────────────────────
   const [chatOpen,    setChatOpen]    = useState(false);
@@ -121,22 +127,90 @@ export default function Game() {
     let alive = true, raf = 0;
     const engine = new GameEngine(selectedClass);
     engineRef.current = engine;
+
+    // ── Realtime world positions ──────────────────────────────────────────────
+    const remoteLastSeen = new Map<string, number>();
+    joinWorldChannel(
+      authUserId!,
+      (data) => {
+        engine.upsertRemotePlayer(data);
+        remoteLastSeen.set(data.userId, Date.now());
+      },
+      (userId) => { engine.removeRemotePlayer(userId); remoteLastSeen.delete(userId); },
+    );
+
+    // ── Broadcast own position every 100ms ───────────────────────────────────
+    let broadcastTimer = 0;
+    const BROADCAST_INTERVAL = 0.1;
+
+    // ── Ping: measure Supabase roundtrip every 5s ─────────────────────────────
+    let pingTimer = 0;
+    const measurePing = () => {
+      const t0 = performance.now();
+      // lightweight read to measure latency
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/rest/v1/`, {
+        headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string },
+      }).then(() => { pingRef.current = performance.now() - t0; }).catch(() => {});
+    };
+    measurePing();
+
     engine.init(hostRef.current!)
       .then(() => {
         if (!alive) return;
-        // build static minimap once
         tileCanvasRef.current = buildTileCanvas(engine.map);
         let last = 0;
         const loop = (t: number) => {
           if (!alive) return;
-          if (t - last > 33) { setHud(engine.getHud()); last = t; }
+          // FPS
+          const dt = (t - lastFrameRef.current) / 1000;
+          lastFrameRef.current = t;
+          if (dt > 0 && dt < 0.5) {
+            fpsRef.current.push(1 / dt);
+            if (fpsRef.current.length > 30) fpsRef.current.shift();
+            engine.fps = fpsRef.current.reduce((a, b) => a + b, 0) / fpsRef.current.length;
+          }
+          engine.ping = pingRef.current;
+
+          // Broadcast position
+          broadcastTimer += dt;
+          if (broadcastTimer >= BROADCAST_INTERVAL) {
+            broadcastTimer = 0;
+            const p = engine.player;
+            broadcastPosition({
+              userId: authUserId!,
+              username: profile?.username ?? '?',
+              classId: selectedClass,
+              tx: p.tileX, ty: p.tileY,
+              hp: Math.round(p.hp), maxHp: p.maxHp,
+              facing: p.facing, moving: p.moving,
+            });
+          }
+
+          // Ping every 5s
+          pingTimer += dt;
+          if (pingTimer >= 5) { pingTimer = 0; measurePing(); }
+
+          // Purge stale remote players (no update in 6s)
+          const now = Date.now();
+          for (const [uid, ts] of remoteLastSeen) {
+            if (now - ts > 6000) { engine.removeRemotePlayer(uid); remoteLastSeen.delete(uid); }
+          }
+
+          if (t - last > 33) { setHud({ ...engine.getHud() }); last = t; }
           raf = requestAnimationFrame(loop);
         };
         raf = requestAnimationFrame(loop);
       })
       .catch((e) => { if (alive) setErr(String(e?.stack || e)); });
-    return () => { alive = false; cancelAnimationFrame(raf); engine.destroy(); engineRef.current = null; };
-  }, [selectedClass]);
+
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      engine.destroy();
+      engineRef.current = null;
+      leaveWorldChannel();
+    };
+  }, [selectedClass, authUserId, profile]);
 
   const eng = () => engineRef.current!;
 
@@ -155,8 +229,15 @@ export default function Game() {
       {/* ── GAME CANVAS ── */}
       <div className="game__canvas" ref={hostRef} onContextMenu={(e) => e.preventDefault()} />
 
-      {err && (
-        <pre className="game__error">INIT ERROR: {err}</pre>
+      {err && <pre className="game__error">INIT ERROR: {err}</pre>}
+
+      {/* ── FPS / PING overlay ── */}
+      {hud && (
+        <div className="game__perf">
+          <span className={hud.fps >= 55 ? 'perf-ok' : hud.fps >= 30 ? 'perf-warn' : 'perf-bad'}>{hud.fps} FPS</span>
+          <span className="perf-sep">·</span>
+          <span className={hud.ping < 100 ? 'perf-ok' : hud.ping < 200 ? 'perf-warn' : 'perf-bad'}>{hud.ping} ms</span>
+        </div>
       )}
 
       {/* ── RIGHT HUD ── */}

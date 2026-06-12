@@ -228,6 +228,73 @@ export async function sendChatMessage(
   return !error;
 }
 
+// ─── World positions (Realtime Broadcast) ────────────────────────────────────
+export interface WorldPositionPayload {
+  userId: string; username: string; classId: string;
+  tx: number; ty: number; hp: number; maxHp: number;
+  facing: number; moving: boolean;
+}
+
+let _worldChannel: ReturnType<typeof supabase.channel> | null = null;
+
+export function joinWorldChannel(
+  myUserId: string,
+  onPlayer: (data: WorldPositionPayload) => void,
+  onLeave: (userId: string) => void,
+): ReturnType<typeof supabase.channel> {
+  if (_worldChannel) { supabase.removeChannel(_worldChannel); }
+  _worldChannel = supabase.channel('world:positions', { config: { presence: { key: myUserId } } })
+    .on('broadcast', { event: 'pos' }, ({ payload }) => {
+      if (payload.userId !== myUserId) onPlayer(payload as WorldPositionPayload);
+    })
+    .on('presence', { event: 'leave' }, ({ leftPresences }) => {
+      for (const p of leftPresences) onLeave(p.userId ?? p.key);
+    })
+    .subscribe();
+  return _worldChannel;
+}
+
+export function broadcastPosition(payload: WorldPositionPayload) {
+  _worldChannel?.send({ type: 'broadcast', event: 'pos', payload });
+}
+
+export function leaveWorldChannel() {
+  if (_worldChannel) { supabase.removeChannel(_worldChannel); _worldChannel = null; }
+}
+
+// ─── Matchmaking ──────────────────────────────────────────────────────────────
+export async function joinQueue(userId: string, mode: string, elo: number) {
+  await supabase.from('matchmaking_queue').delete().eq('user_id', userId);
+  const { data, error } = await supabase
+    .from('matchmaking_queue')
+    .insert({ user_id: userId, mode, elo, status: 'searching' })
+    .select()
+    .single();
+  return { data, error };
+}
+
+export async function leaveQueue(userId: string) {
+  await supabase.from('matchmaking_queue').delete().eq('user_id', userId);
+}
+
+export function subscribeQueueStatus(
+  userId: string,
+  onMatched: (roomId: string) => void,
+) {
+  return supabase
+    .channel(`queue:${userId}`)
+    .on('postgres_changes', {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'matchmaking_queue',
+      filter: `user_id=eq.${userId}`,
+    }, (payload) => {
+      const row = payload.new as { status: string; room_id: string };
+      if (row.status === 'matched' && row.room_id) onMatched(row.room_id);
+    })
+    .subscribe();
+}
+
 export function subscribeChatMessages(
   channel: string,
   onMessage: (msg: DbChatMessage) => void,

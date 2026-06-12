@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useStore, avgElo } from '../store';
 import { CLASSES, eloToRank, rgb } from '../data';
-import { signOut, sendFriendRequest, acceptFriendRequest, removeFriend, getFriends, getPendingRequests } from '../lib/db';
+import { signOut, sendFriendRequest, acceptFriendRequest, removeFriend, getFriends, getPendingRequests, joinQueue, leaveQueue, subscribeQueueStatus } from '../lib/db';
 import type { DbCharacter, DbFriend, DbFriendRequest } from '../lib/db';
 import './MainMenu.css';
 
@@ -130,8 +130,12 @@ export default function MainMenu() {
   const startGame      = useStore((s) => s.startGame);
   const setScreen      = useStore((s) => s.setScreen);
 
-  const [activeMode,   setActiveMode]  = useState<string | null>(null);
+  const [activeMode,    setActiveMode]   = useState<string | null>(null);
   const [showAddFriend, setShowAddFriend] = useState(false);
+  const [queueMode,     setQueueMode]    = useState<string | null>(null);
+  const [queueSec,      setQueueSec]     = useState(0);
+  const queueRef = useRef<ReturnType<typeof import('../lib/db').subscribeQueueStatus> | null>(null);
+  const queueTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const elo  = avgElo(profile);
   const rank = eloToRank(elo);
@@ -149,12 +153,32 @@ export default function MainMenu() {
     startGame('world');
   };
 
-  const handleQueueMode = () => {
+  const handleQueueMode = async () => {
     if (!activeMode) return;
     const char = selectedChar ?? characters[0] ?? null;
     if (!char) { setScreen('charselect'); return; }
     setSelectedChar(char);
-    startGame(activeMode);
+
+    const modeElo = activeMode === '1v1' ? (profile?.elo_1v1 ?? 1500)
+      : activeMode === '2v2' ? (profile?.elo_2v2 ?? 1500)
+      : (profile?.elo_4v4 ?? 1500);
+
+    setQueueMode(activeMode); setQueueSec(0);
+    await joinQueue(authUserId, activeMode, modeElo);
+
+    queueTimerRef.current = setInterval(() => setQueueSec((s) => s + 1), 1000);
+
+    queueRef.current = subscribeQueueStatus(authUserId, (roomId) => {
+      cancelQueue();
+      startGame(activeMode + ':' + roomId);
+    });
+  };
+
+  const cancelQueue = () => {
+    leaveQueue(authUserId);
+    setQueueMode(null); setQueueSec(0);
+    if (queueTimerRef.current) { clearInterval(queueTimerRef.current); queueTimerRef.current = null; }
+    if (queueRef.current) { queueRef.current.unsubscribe(); queueRef.current = null; }
   };
 
   const handleSignOut = async () => { await signOut(); };
@@ -245,7 +269,17 @@ export default function MainMenu() {
                   <button key={m} className={`mode-btn ${activeMode === m ? 'mode-btn--on' : ''}`} onClick={() => setActiveMode(m)}>{m}</button>
                 ))}
               </div>
-              {activeMode && (
+              {queueMode ? (
+                <div className="queue-searching">
+                  <span className="queue-dots">
+                    <span /><span /><span />
+                  </span>
+                  <span className="queue-label">
+                    BUSCANDO {queueMode.toUpperCase()} · {Math.floor(queueSec / 60).toString().padStart(2,'0')}:{(queueSec % 60).toString().padStart(2,'0')}
+                  </span>
+                  <button className="btn btn--ghost queue-cancel" onClick={cancelQueue}>✕</button>
+                </div>
+              ) : activeMode && (
                 <button className="btn btn--primary play-now-btn" onClick={handleQueueMode}>▶ BUSCAR PARTIDA</button>
               )}
 

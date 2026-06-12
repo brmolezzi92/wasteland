@@ -84,6 +84,11 @@ export interface HudSpell {
 }
 export interface MinimapDot { tx: number; ty: number; color: string; }
 export interface LogEntry { msg: string; color: string; }
+export interface RemotePlayerData {
+  userId: string; username: string; classId: string;
+  tx: number; ty: number; hp: number; maxHp: number;
+  facing: number; moving: boolean;
+}
 export interface HudState {
   className: string; role: string;
   hp: number; maxHp: number; energy: number; maxEnergy: number;
@@ -93,11 +98,21 @@ export interface HudState {
   isGhost: boolean; ghostTimer: number; cc: CC; ccTimer: number;
   isInvisible: boolean;
   logs: LogEntry[];
+  fps: number; ping: number;
   minimap: {
     mapW: number; mapH: number;
     playerTx: number; playerTy: number;
     dots: MinimapDot[];
   };
+}
+
+interface RemotePEntry {
+  cont: Container; sprite: Sprite | Graphics; nameLabel: Text;
+  hpBar: Graphics;
+  visX: number; visY: number; tgtX: number; tgtY: number;
+  hp: number; maxHp: number; facing: number; moving: boolean;
+  animFrame: number; animTimer: number; animState: AnimState;
+  lastSeen: number;
 }
 
 export class GameEngine {
@@ -130,6 +145,9 @@ export class GameEngine {
   effects: { obj: Container; update: (dt: number) => boolean }[] = [];
   pendingDamage: { t: number; target: Entity; dmg: number; cc: CC; ccDur: number; wx: number; wy: number }[] = [];
   pendingAreas: { t: number; wx: number; wy: number; r: number; dmg: number; sp: any; c: number }[] = [];
+
+  remotePlayers = new Map<string, RemotePEntry>();
+  fps = 0; ping = 0;
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -487,6 +505,7 @@ export class GameEngine {
     this.updatePendingDamage(dt);
     this.updatePendingAreas(dt);
     this.updateEffects(dt);
+    this.updateRemotePlayers(dt);
     this.updateCamera();
     this.drawGroundItems(dt);
     this.syncSprites(dt);
@@ -972,6 +991,94 @@ export class GameEngine {
     g.fill({ color: c, alpha: 0.18 }).stroke({ width: 1.5, color: c, alpha: 0.55 });
   }
 
+  // ── Remote players ───────────────────────────────────────────────────────────
+  upsertRemotePlayer(data: RemotePlayerData) {
+    let entry = this.remotePlayers.get(data.userId);
+    if (!entry) {
+      const cont = new Container();
+      let sprite: Sprite | Graphics;
+      const frames = this.animFrames['player_idle'];
+      if (frames?.length) {
+        sprite = new Sprite(frames[0]);
+        (sprite as Sprite).anchor.set(0.5, 1);
+      } else {
+        sprite = new Graphics().rect(-14, -32, 28, 32).fill(0x4488ff);
+      }
+      const hpBar = new Graphics();
+      const nameLabel = new Text({
+        text: data.username,
+        style: { fontFamily: 'Oswald, sans-serif', fontSize: 13, fontWeight: '700', fill: 0x88ccff, stroke: { color: 0x000000, width: 3 } },
+      });
+      nameLabel.anchor.set(0.5, 1);
+      nameLabel.y = -36;
+      cont.addChild(sprite, hpBar, nameLabel);
+      this.entityLayer.addChild(cont);
+      entry = {
+        cont, sprite, nameLabel, hpBar,
+        visX: data.tx * TILE, visY: data.ty * TILE,
+        tgtX: data.tx * TILE, tgtY: data.ty * TILE,
+        hp: data.hp, maxHp: data.maxHp,
+        facing: data.facing, moving: data.moving,
+        animFrame: 0, animTimer: 0, animState: 'idle',
+        lastSeen: Date.now(),
+      };
+      this.remotePlayers.set(data.userId, entry);
+    } else {
+      entry.tgtX = data.tx * TILE;
+      entry.tgtY = data.ty * TILE;
+      entry.hp = data.hp; entry.maxHp = data.maxHp;
+      entry.facing = data.facing; entry.moving = data.moving;
+      entry.nameLabel.text = data.username;
+      entry.lastSeen = Date.now();
+    }
+  }
+
+  removeRemotePlayer(userId: string) {
+    const entry = this.remotePlayers.get(userId);
+    if (entry) { entry.cont.destroy(); this.remotePlayers.delete(userId); }
+  }
+
+  updateRemotePlayers(dt: number) {
+    const speed = TILE / 0.18; // same feel as local player movement
+    for (const [, e] of this.remotePlayers) {
+      const ddx = e.tgtX - e.visX, ddy = e.tgtY - e.visY;
+      const dist = Math.hypot(ddx, ddy);
+      e.moving = dist > 2;
+      if (e.moving) {
+        const step = speed * dt;
+        if (step >= dist) { e.visX = e.tgtX; e.visY = e.tgtY; }
+        else { e.visX += (ddx / dist) * step; e.visY += (ddy / dist) * step; }
+      }
+
+      // Animate
+      const newState: AnimState = e.moving ? 'run' : 'idle';
+      if (newState !== e.animState) { e.animState = newState; e.animFrame = 0; e.animTimer = 0; }
+      const animKey = e.moving ? 'player_run' : 'player_idle';
+      const cfg = e.moving ? { frames: 6 } : { frames: 4 };
+      const fps = e.moving ? 10 : 6;
+      e.animTimer += dt;
+      if (e.animTimer >= 1 / fps) { e.animTimer -= 1 / fps; e.animFrame = (e.animFrame + 1) % cfg.frames; }
+      const frames = this.animFrames[animKey];
+      if (frames?.length && e.sprite instanceof Sprite) {
+        e.sprite.texture = frames[Math.min(e.animFrame, frames.length - 1)];
+      }
+      e.sprite.scale.x = e.facing * ENTITY_SCALE;
+      e.sprite.scale.y = ENTITY_SCALE;
+
+      // HP bar
+      const g = e.hpBar; g.clear();
+      const bw = TILE, bh = 5;
+      const bx = -bw / 2, by = -(TILE * 1.5) - 8;
+      g.rect(bx, by, bw, bh).fill(0x1a0808);
+      g.rect(bx, by, bw * Math.max(0, e.hp / Math.max(1, e.maxHp)), bh).fill(0x4488ff);
+
+      // Position container
+      e.cont.x = e.visX + TILE / 2;
+      e.cont.y = e.visY + TILE + 10;
+      e.cont.zIndex = e.visY + TILE + 1;
+    }
+  }
+
   getHud(): HudState {
     const p = this.player;
     const aimLabel = (dt: string) => ['self', 'aoe_self', 'melee_area', 'aoe_heal', 'single_target_heal'].includes(dt)
@@ -987,6 +1094,7 @@ export class GameEngine {
     const dots: MinimapDot[] = [];
     for (const e of this.enemies) if (e.alive) dots.push({ tx: e.tileX, ty: e.tileY, color: e.kind === 'boss' ? '#ff4444' : '#e06020' });
     for (const n of this.npcs)    if (n.alive) dots.push({ tx: n.tileX, ty: n.tileY, color: '#78d25a' });
+    for (const [, r] of this.remotePlayers) dots.push({ tx: r.tgtX / TILE, ty: r.tgtY / TILE, color: '#44aaff' });
     return {
       className: this.cls.name, role: this.cls.role,
       hp: Math.round(p.hp), maxHp: p.maxHp, energy: Math.round(p.energy), maxEnergy: p.maxEnergy,
@@ -997,6 +1105,7 @@ export class GameEngine {
       isGhost: p.isGhost, ghostTimer: p.ghostTimer, cc: p.cc, ccTimer: p.ccTimer,
       isInvisible: p.isInvisible,
       logs: this.logs.slice(-8),
+      fps: Math.round(this.fps), ping: Math.round(this.ping),
       minimap: { mapW: this.map.width, mapH: this.map.height, playerTx: p.tileX, playerTy: p.tileY, dots },
     };
   }

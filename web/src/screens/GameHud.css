@@ -12,6 +12,18 @@
 }
 .game__canvas canvas { display: block; }
 
+.game__perf {
+  position: absolute; top: 6px; left: 8px;
+  font-family: var(--font-head); font-size: 12px; letter-spacing: 1px;
+  background: rgba(0,0,0,.55); padding: 3px 8px;
+  display: flex; align-items: center; gap: 6px;
+  pointer-events: none; z-index: 30;
+}
+.perf-ok   { color: #78d25a; }
+.perf-warn { color: #ffb43c; }
+.perf-bad  { color: #ff4444; }
+.perf-sep  { color: rgba(255,255,255,.25); }
+
 .game__error {
   position: absolute; top: 10px; left: 10px; max-width: 60%;
   color: #ff8080; background: rgba(0,0,0,.8); padding: 12px;
