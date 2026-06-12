@@ -2,11 +2,8 @@ import { Application, Container, Sprite, Graphics, Text, Assets, Texture, Rectan
 import { TileMap, TILE, TILE_SPRITE, TILE_COLOR, ZONE_NAMES, ZONE_COUNT, ZONE_W, ZONE_H } from './tilemap';
 import { CLASSES, SPELLS, ITEMS } from '../data';
 
-const DAMAGE_MULT: Record<string, number> = {
-  single_melee: 1.0, single_ranged: 0.85, aoe_targeted: 0.55, aoe_self: 0.45, melee_area: 0.45,
-};
-const CC_AOE_MULT = 0.6;
-const GHOST_DURATION = 18;
+// El daño, CC y muerte los calcula el servidor (autoritativo). El cliente solo
+// muestra los visuales que el servidor difunde.
 const POTION_CD_KEY = 0.5;
 const POTION_CD_CLICK = 0.4;
 
@@ -162,15 +159,15 @@ export class GameEngine {
 
   remotePlayers = new Map<string, RemotePEntry>();
   fps = 0; ping = 0;
-  isHost = true;
-  // Non-host: relays attack to host
-  onHitEnemy: ((idx: number, dmg: number, cc: CC | null, ccDur: number) => void) | null = null;
-  // Non-host: relays pickup to host
-  onPickup: ((tileX: number, tileY: number) => void) | null = null;
-  // Host: broadcasts enemy damage to a specific player by userId
-  onEnemyAttackPlayer: ((userId: string, dmg: number) => void) | null = null;
-  // This client's userId — used by host to decide direct-apply vs broadcast
   myUserId = '';
+
+  // ── Intents hacia el servidor (los conecta Game.tsx con NetClient) ──────────
+  onMove: ((tx: number, ty: number, facing: number, moving: boolean) => void) | null = null;
+  onCast: ((intent: { spellId: string; enemyIdx?: number; wx?: number; wy?: number }) => void) | null = null;
+  onZoneEnter: ((zoneIdx: number) => void) | null = null;
+  onPickupIntent: ((tileX: number, tileY: number) => void) | null = null;
+  onUsePotion: ((slot: number) => void) | null = null;
+  onMatchmake: (() => void) | null = null;
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -415,23 +412,10 @@ export class GameEngine {
       this.makeEntity('npc', name, tx, ty, '', 999, 1));
   }
 
-  // ── ground items ──────────────────────────────────────────────────────────
-  spawnGroundItems() {
-    const items = this.map.groundItemIds;
-    const count = this.map.groundItemCount;
-    let placed = 0, attempts = 0;
-    while (placed < count && attempts < 3000) {
-      attempts++;
-      const tx = Math.floor(Math.random() * this.map.width);
-      const ty = Math.floor(Math.random() * this.map.height);
-      if (this.map.isSolid(tx, ty)) continue;
-      const occupied = [this.player, ...this.enemies, ...this.npcs].some(e => e.tileX === tx && e.tileY === ty);
-      if (occupied) continue;
-      const itemId = items[Math.floor(Math.random() * items.length)];
-      this.groundItems.push({ itemId, qty: 1, tileX: tx, tileY: ty, t: Math.random() * Math.PI * 2 });
-      placed++;
-    }
-  }
+  // ── ground items (autoritativos en el servidor) ───────────────────────────
+  // El servidor genera y posee los items; el cliente solo los renderiza desde
+  // los snapshots. No se generan items localmente.
+  spawnGroundItems() { /* no-op: el servidor provee los items via snapshot */ }
 
   tryPickup() {
     const p = this.player;
@@ -439,29 +423,20 @@ export class GameEngine {
     const idx = this.groundItems.findIndex(gi => gi.tileX === p.tileX && gi.tileY === p.tileY);
     if (idx === -1) return;
     const gi = this.groundItems[idx];
+    // Optimista: lo saco localmente y aviso al server; el snapshot corrige si falla.
     this.groundItems.splice(idx, 1);
-    this.addItemToInventory(gi.itemId, gi.qty);
     const name = ITEMS[gi.itemId]?.name ?? gi.itemId;
     this.floatText(p.visX + TILE / 2, p.visY, `+${gi.qty} ${name}`, 0xffe080);
-    // Notify host to remove from authoritative world state
-    this.onPickup?.(gi.tileX, gi.tileY);
+    this.onPickupIntent?.(gi.tileX, gi.tileY);
   }
 
-  // Host: remove item picked up by a remote player
-  applyRemotePickup(tileX: number, tileY: number) {
-    const idx = this.groundItems.findIndex(gi => gi.tileX === tileX && gi.tileY === tileY);
-    if (idx !== -1) this.groundItems.splice(idx, 1);
-  }
-
-  // Returns compact ground items state for broadcast
-  getGroundItemsState(): [string, number, number, number][] {
-    return this.groundItems.map(gi => [gi.itemId, gi.qty, gi.tileX, gi.tileY]);
-  }
-
-  // Non-host: replace ground items from host broadcast
-  applyGroundItemsState(items: [string, number, number, number][]) {
-    this.groundItems = items.map(([itemId, qty, tileX, tileY]) => ({
-      itemId, qty, tileX, tileY, t: Math.random() * Math.PI * 2,
+  // Reemplaza los items del piso desde el snapshot del servidor.
+  applyGroundItemsFromServer(items: { itemId: string; qty: number; tx: number; ty: number }[]) {
+    // Conserva la fase de animación de items que persisten entre snapshots.
+    const prev = new Map(this.groundItems.map(g => [`${g.tileX},${g.tileY}`, g.t]));
+    this.groundItems = items.map(it => ({
+      itemId: it.itemId, qty: it.qty, tileX: it.tx, tileY: it.ty,
+      t: prev.get(`${it.tx},${it.ty}`) ?? Math.random() * Math.PI * 2,
     }));
   }
 
@@ -606,11 +581,8 @@ export class GameEngine {
     }
     if (this.hitstop > 0) { this.hitstop -= dt; dt *= 0.18; }
     this.updatePlayer(dt);
-    for (const e of this.enemies) {
-      if (this.isHost) this.updateEnemy(dt, e);
-      else this.lerpEnemy(dt, e);
-    }
-    this.updatePendingDamage(dt);
+    // Enemigos: el servidor es autoritativo, el cliente solo interpola.
+    for (const e of this.enemies) this.lerpEnemy(dt, e);
     this.updatePendingAreas(dt);
     this.updateEffects(dt);
     this.updateRemotePlayers(dt);
@@ -630,9 +602,8 @@ export class GameEngine {
     if (p.shieldTimer > 0) { p.shieldTimer -= dt; if (p.shieldTimer <= 0) p.shield = 0; }
     if (p.invisTimer > 0) { p.invisTimer -= dt; if (p.invisTimer <= 0) p.isInvisible = false; }
 
+    // Fantasma y respawn los controla el servidor (forceZone + you).
     if (p.isGhost) {
-      p.ghostTimer -= dt;
-      if (p.ghostTimer <= 0) this.respawn();
       this.moveEntity(dt, p, p.moveTime, true);
       return;
     }
@@ -679,10 +650,19 @@ export class GameEngine {
       for (const o of all) if (o !== e && o.alive && o.tileX === nx && o.tileY === ny) return false;
     }
     e.tileX = nx; e.tileY = ny; e.tgtX = nx * TILE; e.tgtY = ny * TILE; e.moving = true;
+    // El jugador reporta su movimiento al servidor (autoritativo del mundo).
+    if (e.kind === 'player') this.onMove?.(nx, ny, e.facing, true);
     return true;
   }
 
   loadZone(idx: number, fromSouth: boolean) {
+    const tx = Math.floor(ZONE_W / 2);
+    const ty = fromSouth ? ZONE_H - 4 : 3;
+    this.loadZoneTo(idx, tx, ty);
+  }
+
+  // Carga una zona y posiciona al jugador en (tx,ty). Avisa al servidor.
+  loadZoneTo(idx: number, tx: number, ty: number) {
     this.currentZone = idx;
     this.map = new TileMap(idx);
     for (const c of [...this.tileLayer.children]) c.destroy();
@@ -697,104 +677,49 @@ export class GameEngine {
     for (const fx of this.effects) { fx.obj.parent?.removeChild(fx.obj); fx.obj.destroy(); }
     this.effects = []; this.pendingDamage = []; this.pendingAreas = [];
     this.groundItems = [];
-    const ty2 = fromSouth ? ZONE_H - 4 : 3;
-    this.player.tileX = Math.floor(ZONE_W / 2); this.player.tileY = ty2;
-    this.player.tgtX = this.player.tileX * TILE; this.player.tgtY = ty2 * TILE;
+    this.player.tileX = tx; this.player.tileY = ty;
+    this.player.tgtX = tx * TILE; this.player.tgtY = ty * TILE;
     this.player.visX = this.player.tgtX; this.player.visY = this.player.tgtY;
     this.player.moving = false;
-    this.player.spawnX = this.player.tileX; this.player.spawnY = this.player.tileY;
+    this.player.spawnX = tx; this.player.spawnY = ty;
     this.buildTiles(); this.buildGrid(); this.buildProps();
-    this.spawnEnemiesNpcs(); this.spawnGroundItems();
+    this.spawnEnemiesNpcs();
     this.addLog(`▶ ${ZONE_NAMES[idx]}`, '#88ddff');
-    this.onZoneChange?.();
+    this.onZoneChange?.();       // rebuild minimap
+    this.onZoneEnter?.(idx);     // avisar al servidor
   }
 
-  updateEnemy(dt: number, e: Entity) {
-    if (!e.alive) return;
-    e.hitTimer = Math.max(0, e.hitTimer - dt);
-    if (e.ccTimer > 0) { e.ccTimer -= dt; if (e.ccTimer <= 0) e.cc = null; }
-    e.atkCd = Math.max(0, e.atkCd - dt);
-    e.moveTimer = Math.max(0, e.moveTimer - dt);
-    if (e.cc === 'stun') return;
-
-    const p = this.player;
-    const myDist = Math.hypot(e.tileX - p.tileX, e.tileY - p.tileY);
-    const myVisible = !p.isGhost && (!p.isInvisible || myDist <= 1.5);
-
-    // ── Nearest player: this client's player + every remote player ────────────
-    // Host es autoridad — todos los jugadores son targets iguales.
-    let tgtTx = p.tileX, tgtTy = p.tileY;
-    let tgtUserId = this.myUserId;   // '' significa "este cliente"
-    let minDist = myVisible ? myDist : Infinity;
-    for (const [uid, rp] of this.remotePlayers) {
-      const rtx = Math.round(rp.tgtX / TILE), rty = Math.round(rp.tgtY / TILE);
-      const d = Math.hypot(e.tileX - rtx, e.tileY - rty);
-      if (d < minDist) { minDist = d; tgtTx = rtx; tgtTy = rty; tgtUserId = uid; }
-    }
-    const dist = minDist;
-    const targetVisible = dist < Infinity;
-
-    if (tgtTx !== e.tileX) e.facing = tgtTx > e.tileX ? 1 : -1;
-    const melee  = e.kind === 'boss' ? 1.6 : 1.5;
-    const detect = e.kind === 'boss' ? 18  : 9;
-
-    // ── Melee attack ──────────────────────────────────────────────────────────
-    if (targetVisible && dist <= melee && e.atkCd <= 0) {
-      const dmg = e.kind === 'boss' ? 22 : 9;
-      e.atkCd = e.kind === 'boss' ? 1.0 : 1.4;
-      this.applyEnemyDamage(tgtUserId, dmg);
-    }
-    // ── Boss ranged ───────────────────────────────────────────────────────────
-    if (targetVisible && e.kind === 'boss' && dist <= 9 && dist > 1.6 && e.atkCd <= 0) {
-      const wx = tgtTx * TILE + TILE / 2, wy = tgtTy * TILE + TILE / 2;
-      const fx = e.visX + TILE / 2, fy = e.visY + TILE / 2;
-      this.projectile(fx, fy, wx, wy, 0xff5040);
-      const travel = Math.hypot(wx - fx, wy - fy) / 500;
-      // Daño al llegar: host aplica a quien corresponda
-      const snapUserId = tgtUserId;
-      const snapDmg = 18;
-      setTimeout(() => { if (e.alive) this.applyEnemyDamage(snapUserId, snapDmg); }, travel * 1000);
-      e.atkCd = 1.6;
-    }
-
-    // ── Movement ──────────────────────────────────────────────────────────────
-    const canMove = e.cc !== 'root';
-    if (targetVisible && canMove && e.moveTimer <= 0 && !e.moving && dist <= detect && dist > melee) {
-      const sx = Math.sign(tgtTx - e.tileX), sy = Math.sign(tgtTy - e.tileY);
-      const tries = Math.abs(tgtTx - e.tileX) >= Math.abs(tgtTy - e.tileY)
-        ? [[sx, 0], [0, sy]] : [[0, sy], [sx, 0]];
-      for (const [mx, my] of tries) if ((mx || my) && this.tryMove(e, mx, my, false)) break;
-      e.moveTimer = e.cc === 'slow' ? 0.9 : 0.5;
-    }
-    const mt = e.kind === 'boss' ? 0.38 : 0.30;
-    this.moveEntity(dt, e, mt, false);
-  }
-
-  // ── combate ────────────────────────────────────────────────────────────────
+  // ── combate (intents al servidor; el servidor resuelve el daño) ────────────
+  // El cliente muestra el visual de inmediato para feedback, pero el daño,
+  // muerte y CC los decide el servidor y vuelven como eventos 'fx'/'you'.
   worldClick(wx: number, wy: number) {
     if (this.pending == null) return;
-    const sp = SPELLS[this.player.spellIds[this.pending]];
+    const idx = this.pending;
+    const sp = SPELLS[this.player.spellIds[idx]];
     const mode = this.targetMode(sp);
     const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
     if (mode === 'ground') {
-      this.castGround(sp, wx, wy); this.confirmCast(); this.cancelCast();
+      this.castGroundVisual(sp, wx, wy);
+      this.sendCast(idx, { wx, wy });
+      this.cancelCast();
     } else if (mode === 'ally') {
-      // Revivir: single-target sobre un aliado en Proyección Cuántica.
-      // En práctica solo-jugador no hay aliados caídos.
-      const ally = this.allyGhostAtTile(tx, ty);
-      if (ally) { this.reviveAlly(ally); this.confirmCast(); this.cancelCast(); }
-      else { this.floatText(wx, wy, 'Sin aliado caído', 0xc8c850); this.cancelCast(); }
+      this.floatText(wx, wy, 'Sin aliado caído', 0xc8c850); this.cancelCast();
     } else {
       const enemy = this.enemyAtTile(tx, ty);
-      if (enemy) { this.castEnemy(sp, enemy); this.confirmCast(); this.cancelCast(); }
-      else { this.floatText(wx, wy, '¡Sin impacto!', 0xff6464); this.cancelCast(); }
+      if (enemy) {
+        this.castEnemyVisual(sp, enemy);
+        this.sendCast(idx, { enemyIdx: this.enemies.indexOf(enemy) });
+        this.cancelCast();
+      } else { this.floatText(wx, wy, '¡Sin impacto!', 0xff6464); this.cancelCast(); }
     }
   }
 
-  confirmCast() {
-    const idx = this.pending!; const sp = SPELLS[this.player.spellIds[idx]];
-    this.player.energy -= sp.energy_cost || 0;
+  // Cooldown/energía optimistas para que el HUD responda ya; el server corrige.
+  private sendCast(idx: number, extra: { enemyIdx?: number; wx?: number; wy?: number }) {
+    const sp = SPELLS[this.player.spellIds[idx]];
+    this.player.energy = Math.max(0, this.player.energy - (sp.energy_cost || 0));
     this.player.spellCd[idx] = sp.cooldown || 1.5;
+    this.onCast?.({ spellId: this.player.spellIds[idx], ...extra });
   }
 
   castInstant(idx: number) {
@@ -802,52 +727,31 @@ export class GameEngine {
     const dt = sp.damage_type; const c = col((sp.color as any) || [200, 200, 200]);
     const aoeR = (sp as any).aoe_radius || 64;
     const pcx = p.visX + TILE / 2, pcy = p.visY + TILE / 2;
+    // Buffs propios: aplicamos optimista para respuesta inmediata.
     if (dt === 'self') {
-      if ((sp as any).shield) { p.shield = (sp as any).shield; p.shieldTimer = (sp as any).shield_duration || 5; }
       if ((sp as any).invisible_duration) {
         p.isInvisible = true; p.invisTimer = (sp as any).invisible_duration;
         this.floatText(pcx, pcy - TILE, 'CAMUFLAJE', 0xb4dc64);
       }
-      if ((sp as any).cleanse) {
-        p.cc = null; p.ccTimer = 0;
-        this.floatText(pcx, pcy - TILE, 'CC LIMPIADO', 0x64dcff);
-      }
-      this.explosion(pcx, pcy, c, aoeR);
+      if ((sp as any).cleanse) { p.cc = null; p.ccTimer = 0; this.floatText(pcx, pcy - TILE, 'CC LIMPIADO', 0x64dcff); }
     } else if (dt === 'single_target_heal' || dt === 'aoe_heal') {
-      let heal = (sp as any).heal_base || 0;
-      if (dt === 'aoe_heal') heal = Math.round(heal * ((sp as any).heal_multiplier || 0.55));
-      p.hp = Math.min(p.maxHp, p.hp + heal);
-      this.floatText(pcx, pcy - TILE, `+${heal}`, 0x78dc8c);
-      this.explosion(pcx, pcy, c, aoeR);
-    } else {
-      const dmg = this.calcDamage(sp);
-      this.explosion(pcx, pcy, c, aoeR);
-      this.damageRadius(pcx, pcy, aoeR, dmg, sp);
+      this.floatText(pcx, pcy - TILE, 'CURACIÓN', 0x78dc8c);
     }
-    this.player.energy -= sp.energy_cost || 0;
-    this.player.spellCd[idx] = sp.cooldown || 1.5;
+    this.explosion(pcx, pcy, c, aoeR);
+    this.sendCast(idx, {});
   }
 
-  castGround(sp: any, wx: number, wy: number) {
-    this.player.isInvisible = false; this.player.invisTimer = 0;
+  // Solo visual: telegraph del AoE en el piso.
+  castGroundVisual(sp: any, wx: number, wy: number) {
     const c = col(sp.color || [200, 200, 200]);
     const aoeR = sp.aoe_radius || 96;
-    const dmg = this.calcDamage(sp);
-    // Telegraph: avisa el área; el daño cae tras el delay (esquivable).
-    const delay = 0.35;
-    this.aoeTelegraph(wx, wy, c, aoeR, delay);
-    this.pendingAreas.push({ t: delay, wx, wy, r: aoeR, dmg, sp, c });
+    this.aoeTelegraph(wx, wy, c, aoeR, 0.35);
   }
 
   updatePendingAreas(dt: number) {
+    // El daño de área lo resuelve el servidor; acá solo expira telegraphs viejos.
     const keep: typeof this.pendingAreas = [];
-    for (const a of this.pendingAreas) {
-      a.t -= dt;
-      if (a.t <= 0) {
-        this.aoeIndicator(a.wx, a.wy, a.c, a.r);   // flash de impacto
-        this.damageRadius(a.wx, a.wy, a.r, a.dmg, a.sp);
-      } else keep.push(a);
-    }
+    for (const a of this.pendingAreas) { a.t -= dt; if (a.t > 0) keep.push(a); }
     this.pendingAreas = keep;
   }
 
@@ -877,67 +781,14 @@ export class GameEngine {
     return cells;
   }
 
-  castEnemy(sp: any, enemy: Entity) {
+  // Solo visual: proyectil o explosión sobre el enemigo objetivo.
+  castEnemyVisual(sp: any, enemy: Entity) {
     this.player.isInvisible = false; this.player.invisTimer = 0;
     const c = col(sp.color || [200, 200, 200]);
-    const dmg = this.calcDamage(sp);
     const tx = enemy.visX + TILE / 2, ty = enemy.visY + TILE / 2;
     const pcx = this.player.visX + TILE / 2, pcy = this.player.visY + TILE / 2;
-    const cc: CC = sp.cc || null; const ccDur = sp.cc_duration || 0;
-    if (sp.effect === 'projectile') {
-      this.projectile(pcx, pcy, tx, ty, c);
-      const travel = Math.hypot(tx - pcx, ty - pcy) / 600;
-      this.pendingDamage.push({ t: travel, target: enemy, dmg, cc, ccDur, wx: tx, wy: ty });
-    } else {
-      this.explosion(tx, ty, c, 44);
-      this.hitEntity(enemy, dmg, tx, ty, true, cc, ccDur);
-    }
-  }
-
-  calcDamage(sp: any): number {
-    return Math.max(1, Math.round(this.player.baseDamage * (DAMAGE_MULT[sp.damage_type] ?? 1)));
-  }
-
-  // Aplica daño a un hostil. En non-host, relay el golpe al host en vez de aplicarlo localmente.
-  hitEntity(e: Entity, dmg: number, wx: number, wy: number, impactful = true, cc: CC = null, ccDur = 0) {
-    if (dmg <= 0) return;
-    const idx = e.kind !== 'player' ? this.enemies.indexOf(e) : -1;
-
-    // Non-host: relay al host, solo mostrar visual local
-    if (!this.isHost && idx >= 0 && this.onHitEnemy) {
-      this.floatText(wx, wy - TILE, `-${dmg}`, 0xff5050);
-      if (impactful) this.hitstop = Math.max(this.hitstop, 0.045);
-      this.onHitEnemy(idx, dmg, cc, ccDur);
-      return;
-    }
-
-    e.hp = Math.max(0, e.hp - dmg);
-    e.hitTimer = 0.13;
-    this.floatText(wx, wy - TILE, `-${dmg}`, 0xff5050);
-    if (impactful) this.hitstop = Math.max(this.hitstop, 0.045);
-    this.addLog(`Atacaste a ${e.name} por ${dmg}. HP restante: ${Math.round(e.hp)}/${e.maxHp}`, '#ffb43c');
-    if (e.hp <= 0) { e.alive = false; this.addLog(`${e.name} fue eliminado.`, '#ff4444'); }
-    if (cc) this.applyCC(e, cc, ccDur);
-  }
-
-  damageRadius(wx: number, wy: number, r: number, dmg: number, sp: any) {
-    const cc: CC = sp.cc || null; const ccDur = (sp.cc_duration || 1.5) * CC_AOE_MULT;
-    for (const e of this.enemies) {
-      if (!e.alive) continue;
-      const ex = e.visX + TILE / 2, ey = e.visY + TILE / 2;
-      if (Math.hypot(ex - wx, ey - wy) <= r) {
-        this.hitEntity(e, dmg, ex, ey, false, cc, ccDur);
-      }
-    }
-  }
-
-  applyCC(e: Entity, cc: CC, dur: number) {
-    if (!e.alive) return;
-    if (e.cc === 'stun' && cc !== 'stun') return;
-    e.cc = cc; e.ccTimer = dur;
-    const ex = e.visX + TILE / 2, ey = e.visY + TILE / 2;
-    this.floatText(ex, ey - TILE * 1.5, cc!.toUpperCase(),
-      cc === 'stun' ? 0xffe632 : cc === 'root' ? 0x50c8ff : 0xa064ff);
+    if (sp.effect === 'projectile') this.projectile(pcx, pcy, tx, ty, c);
+    else this.explosion(tx, ty, c, 44);
   }
 
   enemyAtTile(tx: number, ty: number): Entity | null {
@@ -945,70 +796,81 @@ export class GameEngine {
     return null;
   }
 
-  // En PvP esto buscará aliados caídos; en práctica solo-jugador no hay aliados.
-  allyGhostAtTile(_tx: number, _ty: number): Entity | null { return null; }
-  reviveAlly(ally: Entity) {
-    ally.hp = Math.round(ally.maxHp * 0.4);
-    const wx = ally.visX + TILE / 2, wy = ally.visY + TILE;
-    this.explosion(wx, wy, 0xdcdc50, 60);
-    this.floatText(wx, wy - TILE, 'REMATERIALIZADO', 0xdcdc50);
-  }
-
-  fireProjectileAtPlayer(from: Entity, dmg: number, c: [number, number, number]) {
-    const pcx = this.player.visX + TILE / 2, pcy = this.player.visY + TILE / 2;
-    const fx = from.visX + TILE / 2, fy = from.visY + TILE / 2;
-    this.projectile(fx, fy, pcx, pcy, col(c));
-    const travel = Math.hypot(pcx - fx, pcy - fy) / 500;
-    this.pendingDamage.push({ t: travel, target: this.player, dmg, cc: null, ccDur: 0, wx: pcx, wy: pcy });
-  }
-
-  // Host: aplica daño de enemigo al jugador correcto.
-  // Si userId coincide con este cliente → aplica directo.
-  // Si no → broadcast para que el cliente destino lo aplique.
-  applyEnemyDamage(userId: string, dmg: number) {
-    if (userId === this.myUserId || userId === '') {
-      this.damagePlayer(dmg);
-    } else {
-      this.onEnemyAttackPlayer?.(userId, dmg);
+  // ── Aplicación de estado autoritativo del servidor ─────────────────────────
+  // Snapshot de la zona: enemigos, items y otros jugadores.
+  applyServerSnapshot(snap: {
+    zoneIdx: number;
+    enemies: { idx: number; tx: number; ty: number; hp: number; alive: boolean; facing: number; cc: string | null }[];
+    items: { itemId: string; qty: number; tx: number; ty: number }[];
+    players: RemotePlayerData[];
+  }) {
+    if (snap.zoneIdx !== this.currentZone) return; // ignorar snapshots de otra zona
+    for (const s of snap.enemies) {
+      const e = this.enemies[s.idx]; if (!e) continue;
+      e.tgtX = s.tx * TILE; e.tgtY = s.ty * TILE;
+      e.tileX = s.tx; e.tileY = s.ty;
+      e.facing = s.facing;
+      e.cc = (s.cc as CC) ?? null;
+      if (e.alive && !s.alive) { e.alive = false; e.hp = 0; this.addLog(`${e.name} fue eliminado.`, '#ff4444'); }
+      else if (s.alive) { e.hp = s.hp; e.alive = true; }
     }
+    this.applyGroundItemsFromServer(snap.items);
+    // Otros jugadores (excluyo a mí mismo)
+    const seen = new Set<string>();
+    for (const np of snap.players) {
+      if (np.userId === this.myUserId) continue;
+      seen.add(np.userId);
+      this.upsertRemotePlayer(np);
+    }
+    for (const [uid] of this.remotePlayers) if (!seen.has(uid)) this.removeRemotePlayer(uid);
   }
 
-  damagePlayer(dmg: number) {
+  // Estado propio autoritativo (HP, energía, inventario, fantasma).
+  applyServerYou(y: { hp?: number; energy?: number; isGhost?: boolean; isInvisible?: boolean;
+                      inventory?: ({ itemId: string; qty: number } | null)[] }) {
     const p = this.player;
-    p.isInvisible = false; p.invisTimer = 0;
-    if (p.shield > 0) { const a = Math.min(p.shield, dmg); p.shield -= a; dmg -= a; }
-    const red = Math.max(0, dmg - Math.floor(p.armor / 3));
-    p.hp = Math.max(0, p.hp - red);
-    const pcx = p.visX + TILE / 2, pcy = p.visY + TILE / 2;
-    if (red > 0) {
-      this.floatText(pcx, pcy - TILE, `-${red}`, 0xff5a5a);
-      p.hitTimer = 0.13;
-      this.addLog(`Recibiste ${red} de daño. HP: ${Math.round(p.hp)}/${p.maxHp}`, '#ff6060');
-    }
-    if (p.hp <= 0 && !p.isGhost) { this.addLog('Fuiste eliminado. Respawn en 18s…', '#ff4444'); this.die(); }
+    if (y.hp != null) { if (y.hp < p.hp) p.hitTimer = 0.13; p.hp = y.hp; }
+    if (y.energy != null) p.energy = y.energy;
+    if (y.isGhost != null) { p.isGhost = y.isGhost; p.sprite.alpha = y.isGhost ? 0.45 : 1; }
+    if (y.isInvisible != null) p.isInvisible = y.isInvisible;
+    if (y.inventory) this.inventory = y.inventory;
   }
 
-  die() { const p = this.player; p.isGhost = true; p.ghostTimer = GHOST_DURATION; p.hp = 0; p.cc = null; p.sprite.alpha = 0.45; }
-  respawn() {
-    const p = this.player; p.isGhost = false; p.ghostTimer = 0;
-    p.hp = Math.round(p.maxHp * 0.4); p.energy = Math.round(p.maxEnergy * 0.2);
-    p.tileX = p.spawnX; p.tileY = p.spawnY; p.visX = p.spawnX * TILE; p.visY = p.spawnY * TILE;
-    p.tgtX = p.visX; p.tgtY = p.visY; p.moving = false; p.sprite.alpha = 1;
+  // Evento visual puntual difundido por el servidor.
+  applyServerFx(fx: { kind: string; wx: number; wy: number; wx2?: number; wy2?: number;
+                      amount?: number; color?: number; text?: string; targetUserId?: string }) {
+    const c = fx.color ?? 0xffaa40;
+    switch (fx.kind) {
+      case 'hit':
+        if (fx.text) this.floatText(fx.wx, fx.wy - TILE, fx.text, c);
+        this.hitstop = Math.max(this.hitstop, 0.04);
+        break;
+      case 'heal':
+        this.floatText(fx.wx, fx.wy - TILE, `+${fx.amount ?? 0}`, 0x78dc8c);
+        this.explosion(fx.wx, fx.wy, c, 60);
+        break;
+      case 'explosion':
+        this.explosion(fx.wx, fx.wy, c, fx.amount ?? 60);
+        break;
+      case 'projectile':
+        if (fx.wx2 != null && fx.wy2 != null) this.projectile(fx.wx, fx.wy, fx.wx2, fx.wy2, c);
+        break;
+      case 'death':
+        this.explosion(fx.wx, fx.wy, 0xff5050, 50);
+        break;
+    }
   }
 
-  updatePendingDamage(dt: number) {
-    const keep: typeof this.pendingDamage = [];
-    for (const pd of this.pendingDamage) {
-      pd.t -= dt;
-      if (pd.t <= 0) {
-        if (pd.target === this.player) this.damagePlayer(pd.dmg);
-        else if (pd.target.alive) {
-          this.hitEntity(pd.target, pd.dmg, pd.wx, pd.wy, true, pd.cc, pd.ccDur);
-        }
-        this.explosion(pd.wx, pd.wy, 0xffaa40, 34);
-      } else keep.push(pd);
+  // El servidor fuerza una zona/posición (respawn, entrada a duelo).
+  applyForceZone(zoneIdx: number, tx: number, ty: number) {
+    if (zoneIdx !== this.currentZone) {
+      this.pendingZoneChange = null;
+      this.loadZoneTo(zoneIdx, tx, ty);
+    } else {
+      const p = this.player;
+      p.tileX = tx; p.tileY = ty; p.tgtX = tx * TILE; p.tgtY = ty * TILE;
+      p.visX = p.tgtX; p.visY = p.tgtY; p.moving = false;
     }
-    this.pendingDamage = keep;
   }
 
   // ── potions ──────────────────────────────────────────────────────────────
@@ -1016,9 +878,8 @@ export class GameEngine {
     if ((method === 'key' ? this.potionKey : this.potionClick) > 0) return;
     const slot = this.inventory[idx]; if (!slot) return;
     const data = ITEMS[slot.itemId]; if (!data || data.type !== 'consumable') return;
-    if (data.restore_hp) this.player.hp = Math.min(this.player.maxHp, this.player.hp + data.restore_hp);
-    if (data.restore_mp) this.player.energy = Math.min(this.player.maxEnergy, this.player.energy + data.restore_mp);
-    slot.qty--; if (slot.qty <= 0) this.inventory[idx] = null;
+    // El servidor descuenta del inventario autoritativo y devuelve hp/energía.
+    this.onUsePotion?.(idx);
     if (method === 'key') this.potionKey = POTION_CD_KEY; else this.potionClick = POTION_CD_CLICK;
   }
 
@@ -1166,8 +1027,8 @@ export class GameEngine {
     const tx = Math.floor(this.mouseWX / TILE), ty = Math.floor(this.mouseWY / TILE);
 
     // Highlight del tile objetivo (solo single-target: el hitbox es el tile)
-    if (mode === 'enemy' || mode === 'ally') {
-      const target = mode === 'enemy' ? this.enemyAtTile(tx, ty) : this.allyGhostAtTile(tx, ty);
+    if (mode === 'enemy') {
+      const target = this.enemyAtTile(tx, ty);
       const valid = !!target;
       const hc = valid ? 0x66e06a : 0xc85a4a;   // verde válido / rojo inválido
       g.rect(tx * TILE + 2, ty * TILE + 2, TILE - 4, TILE - 4)
@@ -1199,7 +1060,7 @@ export class GameEngine {
     g.fill({ color: c, alpha: 0.18 }).stroke({ width: 1.5, color: c, alpha: 0.55 });
   }
 
-  // ── Enemy sync (non-host) ────────────────────────────────────────────────────
+  // ── Interpolación de enemigos (estado autoritativo del servidor) ───────────
   lerpEnemy(dt: number, e: Entity) {
     e.hitTimer = Math.max(0, e.hitTimer - dt);
     if (!e.alive) return;
@@ -1213,36 +1074,6 @@ export class GameEngine {
     } else {
       e.moving = false;
     }
-  }
-
-  applyEnemyState(states: { idx: number; tileX: number; tileY: number; hp: number; alive: boolean; facing: number }[]) {
-    for (const s of states) {
-      const e = this.enemies[s.idx]; if (!e) continue;
-      e.tileX = s.tileX; e.tileY = s.tileY;
-      e.tgtX = s.tileX * TILE; e.tgtY = s.tileY * TILE;
-      e.moving = (e.tgtX !== e.visX || e.tgtY !== e.visY);
-      e.facing = s.facing;
-      if (e.alive && !s.alive) {
-        e.alive = false; e.hp = 0;
-        this.addLog(`${e.name} fue eliminado.`, '#ff4444');
-      } else if (s.alive) {
-        e.hp = s.hp;
-      }
-    }
-  }
-
-  // Host aplica un golpe retransmitido desde otro cliente
-  applyRemoteAttack(idx: number, dmg: number, cc: CC | null, ccDur: number) {
-    const e = this.enemies[idx];
-    if (!e || !e.alive) return;
-    const wx = e.visX + TILE / 2, wy = e.visY + TILE / 2;
-    this.hitEntity(e, dmg, wx, wy, true, cc, ccDur);
-  }
-
-  getEnemyState() {
-    return this.enemies.map((e, idx) => ({
-      idx, tileX: e.tileX, tileY: e.tileY, hp: Math.round(e.hp), alive: e.alive, facing: e.facing,
-    }));
   }
 
   // ── Remote players ───────────────────────────────────────────────────────────

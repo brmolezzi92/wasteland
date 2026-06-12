@@ -2,11 +2,9 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../store';
 import { GameEngine, type HudState } from '../engine/GameEngine';
 import { TileMap, TILE_COLOR } from '../engine/tilemap';
-import {
-  getChatMessages, sendChatMessage, subscribeChatMessages,
-  joinWorldChannel, broadcastPosition, broadcastEnemyState, broadcastEvent, leaveWorldChannel,
-} from '../lib/db';
+import { getChatMessages, sendChatMessage, subscribeChatMessages } from '../lib/db';
 import type { DbChatMessage } from '../lib/db';
+import { NetClient } from '../lib/netClient';
 import './GameHud.css';
 
 // ─── Minimap ──────────────────────────────────────────────────────────────────
@@ -74,6 +72,7 @@ export default function Game() {
 
   const hostRef        = useRef<HTMLDivElement>(null);
   const engineRef      = useRef<GameEngine | null>(null);
+  const netRef         = useRef<NetClient | null>(null);
   const [hud, setHud]  = useState<HudState | null>(null);
   const [err, setErr]  = useState<string | null>(null);
   const [tab, setTab]  = useState<'spells' | 'inv'>('spells');
@@ -129,105 +128,52 @@ export default function Game() {
     engine.myUserId = authUserId!;
     engineRef.current = engine;
 
-    // ── Realtime world positions + enemy sync ─────────────────────────────────
-    const remoteLastSeen = new Map<string, number>();
-    const presenceIds: string[] = [];
-
-    const updateHost = () => {
-      const sorted = [...presenceIds, authUserId!].sort();
-      engine.isHost = sorted[0] === authUserId!;
-    };
-
-    joinWorldChannel(
-      authUserId!,
-      (data) => {
-        engine.upsertRemotePlayer(data);
-        remoteLastSeen.set(data.userId, Date.now());
+    // ── Cliente del servidor autoritativo (socket.io) ─────────────────────────
+    const net = new NetClient({
+      onJoined: (m) => {
+        engine.applyServerYou({ hp: m.you.hp, energy: m.you.energy, inventory: m.inventory });
       },
-      (userId) => {
-        engine.removeRemotePlayer(userId);
-        remoteLastSeen.delete(userId);
-        const i = presenceIds.indexOf(userId);
-        if (i >= 0) presenceIds.splice(i, 1);
-        updateHost();
+      onSnapshot: (snap) => engine.applyServerSnapshot(snap as any),
+      onFx: (fx) => engine.applyServerFx(fx),
+      onYou: (y) => engine.applyServerYou(y),
+      onLog: (msg, color) => engine.addLog(msg, color),
+      onForceZone: (zoneIdx, tx, ty) => {
+        engine.applyForceZone(zoneIdx, tx, ty);
+        tileCanvasRef.current = buildTileCanvas(engine.map);
       },
-      (states, items, zoneIdx) => {
-        if (!engine.isHost) {
-          // Solo aplicar si la zona coincide (evita sobrescribir items de zona incorrecta)
-          const sameZone = zoneIdx === undefined || zoneIdx === engine.currentZone;
-          if (sameZone) engine.applyEnemyState(states as any);
-          if (sameZone && items) engine.applyGroundItemsState(items as any);
-        }
-      },
-      (ids) => {
-        presenceIds.length = 0;
-        presenceIds.push(...ids.filter(id => id !== authUserId!));
-        updateHost();
-      },
-      (evt) => {
-        // Host: jugador no-host golpeó un enemigo → aplicar y rebroadcast
-        if (evt.type === 'atk' && engine.isHost) {
-          engine.applyRemoteAttack(
-            evt.idx as number,
-            evt.dmg as number,
-            (evt.cc as any) ?? null,
-            (evt.ccDur as number) ?? 0,
-          );
-          broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState(), engine.currentZone);
-        }
-        // Cualquier cliente: enemigo atacó a este jugador → aplicar daño
-        if (evt.type === 'enemy_atk' && evt.userId === authUserId) {
-          engine.damagePlayer(evt.dmg as number);
-        }
-        // Host: un jugador recogió un item → eliminar del mundo autoritativo
-        if (evt.type === 'pickup' && engine.isHost) {
-          engine.applyRemotePickup(evt.tileX as number, evt.tileY as number);
-        }
-      },
-    );
-
-    // ── Broadcast own position every 50ms, enemies every 100ms ─────────────
-    let broadcastTimer = 0;
-    let enemyBroadcastTimer = 0;
-    const BROADCAST_INTERVAL = 0.05;
-    const ENEMY_BROADCAST_INTERVAL = 0.1;
-
-    // ── Ping: measure Supabase roundtrip every 5s ─────────────────────────────
-    let pingTimer = 0;
-    const measurePing = () => {
-      const t0 = performance.now();
-      // lightweight read to measure latency
-      fetch(`${import.meta.env.VITE_SUPABASE_URL}/rest/v1/`, {
-        headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string },
-      }).then(() => { pingRef.current = performance.now() - t0; }).catch(() => {});
-    };
-    measurePing();
+      onConnChange: (connected) =>
+        engine.addLog(connected ? '🟢 Conectado al servidor' : '🔴 Servidor desconectado',
+          connected ? '#66e06a' : '#ff4444'),
+      onPing: (ms) => { pingRef.current = ms; engine.ping = ms; },
+    });
+    netRef.current = net;
 
     engine.init(hostRef.current!)
       .then(() => {
         if (!alive) return;
         tileCanvasRef.current = buildTileCanvas(engine.map);
 
-        // Non-host: relay golpes al host en vez de aplicarlos localmente
-        engine.onHitEnemy = (idx, dmg, cc, ccDur) => {
-          broadcastEvent({ type: 'atk', idx, dmg, cc, ccDur });
-        };
-        // Host: difunde daño de enemigo al jugador objetivo
-        engine.onEnemyAttackPlayer = (userId, dmg) => {
-          broadcastEvent({ type: 'enemy_atk', userId, dmg });
-        };
-        // Cualquier jugador: notifica pickup para que el host elimine del mundo
-        engine.onPickup = (tileX, tileY) => {
-          broadcastEvent({ type: 'pickup', tileX, tileY });
-        };
-        // Reconstruir minimap tile canvas al cambiar de zona
-        engine.onZoneChange = () => {
-          tileCanvasRef.current = buildTileCanvas(engine.map);
-        };
+        // ── Intents del engine → servidor ─────────────────────────────────────
+        engine.onMove = (tx, ty, facing, moving) => net.move(tx, ty, facing, moving);
+        engine.onCast = (intent) => net.cast(intent);
+        engine.onZoneEnter = (z) => net.zone(z);
+        engine.onPickupIntent = (tx, ty) => net.pickup(tx, ty);
+        engine.onUsePotion = (slot) => net.usePotion(slot);
+        engine.onMatchmake = () => net.matchmake();
+        // Reconstruir minimap al cambiar de zona localmente
+        engine.onZoneChange = () => { tileCanvasRef.current = buildTileCanvas(engine.map); };
+
+        // Conectar al servidor con la identidad del jugador
+        net.connect({
+          userId: authUserId!,
+          username: profile?.username ?? '?',
+          classId: selectedClass,
+          charId: selectedChar?.id ?? '',
+        });
+
         let last = 0;
         const loop = (t: number) => {
           if (!alive) return;
-          // FPS
           const dt = (t - lastFrameRef.current) / 1000;
           lastFrameRef.current = t;
           if (dt > 0 && dt < 0.5) {
@@ -235,40 +181,6 @@ export default function Game() {
             if (fpsRef.current.length > 30) fpsRef.current.shift();
             engine.fps = fpsRef.current.reduce((a, b) => a + b, 0) / fpsRef.current.length;
           }
-          engine.ping = pingRef.current;
-
-          // Broadcast position
-          broadcastTimer += dt;
-          if (broadcastTimer >= BROADCAST_INTERVAL) {
-            broadcastTimer = 0;
-            const p = engine.player;
-            broadcastPosition({
-              userId: authUserId!,
-              username: profile?.username ?? '?',
-              classId: selectedClass,
-              tx: p.tileX, ty: p.tileY,
-              hp: Math.round(p.hp), maxHp: p.maxHp,
-              facing: p.facing, moving: p.moving,
-            });
-          }
-
-          // Enemy state broadcast (host only) — incluye ground items para sync
-          enemyBroadcastTimer += dt;
-          if (enemyBroadcastTimer >= ENEMY_BROADCAST_INTERVAL) {
-            enemyBroadcastTimer = 0;
-            if (engine.isHost) broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState(), engine.currentZone);
-          }
-
-          // Ping every 5s
-          pingTimer += dt;
-          if (pingTimer >= 5) { pingTimer = 0; measurePing(); }
-
-          // Purge stale remote players (no update in 6s)
-          const now = Date.now();
-          for (const [uid, ts] of remoteLastSeen) {
-            if (now - ts > 6000) { engine.removeRemotePlayer(uid); remoteLastSeen.delete(uid); }
-          }
-
           if (t - last > 33) { setHud({ ...engine.getHud() }); last = t; }
           raf = requestAnimationFrame(loop);
         };
@@ -281,7 +193,8 @@ export default function Game() {
       cancelAnimationFrame(raf);
       engine.destroy();
       engineRef.current = null;
-      leaveWorldChannel();
+      net.disconnect();
+      netRef.current = null;
     };
   }, [selectedClass, authUserId, profile]);
 
