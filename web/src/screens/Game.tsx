@@ -126,6 +126,7 @@ export default function Game() {
   useEffect(() => {
     let alive = true, raf = 0;
     const engine = new GameEngine(selectedClass);
+    engine.myUserId = authUserId!;
     engineRef.current = engine;
 
     // ── Realtime world positions + enemy sync ─────────────────────────────────
@@ -164,7 +165,7 @@ export default function Game() {
         updateHost();
       },
       (evt) => {
-        // Host: recibe golpe del no-host, lo aplica autoritativamente y difunde estado de inmediato
+        // Host: jugador no-host golpeó un enemigo → aplicar y rebroadcast
         if (evt.type === 'atk' && engine.isHost) {
           engine.applyRemoteAttack(
             evt.idx as number,
@@ -174,7 +175,11 @@ export default function Game() {
           );
           broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState(), engine.currentZone);
         }
-        // Host: un jugador remoto recogió un item → eliminar del mundo autoritativo
+        // Cualquier cliente: enemigo atacó a este jugador → aplicar daño
+        if (evt.type === 'enemy_atk' && evt.userId === authUserId) {
+          engine.damagePlayer(evt.dmg as number);
+        }
+        // Host: un jugador recogió un item → eliminar del mundo autoritativo
         if (evt.type === 'pickup' && engine.isHost) {
           engine.applyRemotePickup(evt.tileX as number, evt.tileY as number);
         }
@@ -206,6 +211,10 @@ export default function Game() {
         // Non-host: relay golpes al host en vez de aplicarlos localmente
         engine.onHitEnemy = (idx, dmg, cc, ccDur) => {
           broadcastEvent({ type: 'atk', idx, dmg, cc, ccDur });
+        };
+        // Host: difunde daño de enemigo al jugador objetivo
+        engine.onEnemyAttackPlayer = (userId, dmg) => {
+          broadcastEvent({ type: 'enemy_atk', userId, dmg });
         };
         // Cualquier jugador: notifica pickup para que el host elimine del mundo
         engine.onPickup = (tileX, tileY) => {

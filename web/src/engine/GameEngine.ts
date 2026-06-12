@@ -163,8 +163,14 @@ export class GameEngine {
   remotePlayers = new Map<string, RemotePEntry>();
   fps = 0; ping = 0;
   isHost = true;
+  // Non-host: relays attack to host
   onHitEnemy: ((idx: number, dmg: number, cc: CC | null, ccDur: number) => void) | null = null;
+  // Non-host: relays pickup to host
   onPickup: ((tileX: number, tileY: number) => void) | null = null;
+  // Host: broadcasts enemy damage to a specific player by userId
+  onEnemyAttackPlayer: ((userId: string, dmg: number) => void) | null = null;
+  // This client's userId — used by host to decide direct-apply vs broadcast
+  myUserId = '';
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -712,17 +718,18 @@ export class GameEngine {
     if (e.cc === 'stun') return;
 
     const p = this.player;
-    const localDist = Math.hypot(e.tileX - p.tileX, e.tileY - p.tileY);
-    const localVisible = !p.isGhost && (!p.isInvisible || localDist <= 1.5);
+    const myDist = Math.hypot(e.tileX - p.tileX, e.tileY - p.tileY);
+    const myVisible = !p.isGhost && (!p.isInvisible || myDist <= 1.5);
 
-    // ── Find nearest target: local player + all remote players ────────────────
+    // ── Nearest player: this client's player + every remote player ────────────
+    // Host es autoridad — todos los jugadores son targets iguales.
     let tgtTx = p.tileX, tgtTy = p.tileY;
-    let tgtIsLocal = true;
-    let minDist = localVisible ? localDist : Infinity;
-    for (const [, rp] of this.remotePlayers) {
+    let tgtUserId = this.myUserId;   // '' significa "este cliente"
+    let minDist = myVisible ? myDist : Infinity;
+    for (const [uid, rp] of this.remotePlayers) {
       const rtx = Math.round(rp.tgtX / TILE), rty = Math.round(rp.tgtY / TILE);
       const d = Math.hypot(e.tileX - rtx, e.tileY - rty);
-      if (d < minDist) { minDist = d; tgtTx = rtx; tgtTy = rty; tgtIsLocal = false; }
+      if (d < minDist) { minDist = d; tgtTx = rtx; tgtTy = rty; tgtUserId = uid; }
     }
     const dist = minDist;
     const targetVisible = dist < Infinity;
@@ -735,24 +742,22 @@ export class GameEngine {
     if (targetVisible && dist <= melee && e.atkCd <= 0) {
       const dmg = e.kind === 'boss' ? 22 : 9;
       e.atkCd = e.kind === 'boss' ? 1.0 : 1.4;
-      if (tgtIsLocal) this.damagePlayer(dmg);
-      // Remote players: damage is applied on their own client (they run damagePlayer locally
-      // because the non-host also calls damagePlayer when an enemy overlaps them)
+      this.applyEnemyDamage(tgtUserId, dmg);
     }
-    // ── Boss ranged: fires at nearest visible target ───────────────────────────
+    // ── Boss ranged ───────────────────────────────────────────────────────────
     if (targetVisible && e.kind === 'boss' && dist <= 9 && dist > 1.6 && e.atkCd <= 0) {
-      if (tgtIsLocal) {
-        this.fireProjectileAtPlayer(e, 18, [255, 80, 60]);
-      } else {
-        // Visual only on host; damage handled on remote client
-        const wx = tgtTx * TILE + TILE / 2, wy = tgtTy * TILE + TILE / 2;
-        const fx = e.visX + TILE / 2, fy = e.visY + TILE / 2;
-        this.projectile(fx, fy, wx, wy, 0xff5040);
-      }
+      const wx = tgtTx * TILE + TILE / 2, wy = tgtTy * TILE + TILE / 2;
+      const fx = e.visX + TILE / 2, fy = e.visY + TILE / 2;
+      this.projectile(fx, fy, wx, wy, 0xff5040);
+      const travel = Math.hypot(wx - fx, wy - fy) / 500;
+      // Daño al llegar: host aplica a quien corresponda
+      const snapUserId = tgtUserId;
+      const snapDmg = 18;
+      setTimeout(() => { if (e.alive) this.applyEnemyDamage(snapUserId, snapDmg); }, travel * 1000);
       e.atkCd = 1.6;
     }
 
-    // ── Movement toward nearest target ────────────────────────────────────────
+    // ── Movement ──────────────────────────────────────────────────────────────
     const canMove = e.cc !== 'root';
     if (targetVisible && canMove && e.moveTimer <= 0 && !e.moving && dist <= detect && dist > melee) {
       const sx = Math.sign(tgtTx - e.tileX), sy = Math.sign(tgtTy - e.tileY);
@@ -955,6 +960,17 @@ export class GameEngine {
     this.projectile(fx, fy, pcx, pcy, col(c));
     const travel = Math.hypot(pcx - fx, pcy - fy) / 500;
     this.pendingDamage.push({ t: travel, target: this.player, dmg, cc: null, ccDur: 0, wx: pcx, wy: pcy });
+  }
+
+  // Host: aplica daño de enemigo al jugador correcto.
+  // Si userId coincide con este cliente → aplica directo.
+  // Si no → broadcast para que el cliente destino lo aplique.
+  applyEnemyDamage(userId: string, dmg: number) {
+    if (userId === this.myUserId || userId === '') {
+      this.damagePlayer(dmg);
+    } else {
+      this.onEnemyAttackPlayer?.(userId, dmg);
+    }
   }
 
   damagePlayer(dmg: number) {
