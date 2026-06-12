@@ -1,0 +1,127 @@
+{
+  "baluarte": {
+    "name": "Baluarte",
+    "role": "Tank",
+    "lore": "Híbrido con implantes de blindaje pesado. Absorbe el daño que otros no pueden.",
+    "color": [80, 140, 220],
+    "armor_type": "plate",
+    "spells": [
+      "impacto_sonico",
+      "barrera_datos",
+      "pulso_dominante",
+      "inmovilizar_utilidad",
+      "camuflaje_utilidad",
+      "limpieza_utilidad",
+      "resurreccion_utilidad"
+    ],
+    "stats": {
+      "max_hp": 280,
+      "max_energy": 180,
+      "energy_regen": 6,
+      "base_damage": 55,
+      "move_time_multiplier": 1.2,
+      "armor": 30,
+      "description_stats": {"HP": 5, "Daño": 2, "Velocidad": 1, "Energía": 2}
+    }
+  },
+  "cuchilla": {
+    "name": "Cuchilla",
+    "role": "DPS Melee",
+    "lore": "Augmentos en brazos y reflejos. Mata antes de que el objetivo pueda reaccionar.",
+    "color": [220, 80, 80],
+    "armor_type": "malla",
+    "spells": [
+      "tajo_codigo",
+      "rafaga_triple",
+      "torbellino",
+      "inmovilizar_utilidad",
+      "camuflaje_utilidad",
+      "limpieza_utilidad",
+      "resurreccion_utilidad"
+    ],
+    "stats": {
+      "max_hp": 180,
+      "max_energy": 220,
+      "energy_regen": 9,
+      "base_damage": 80,
+      "move_time_multiplier": 0.85,
+      "armor": 10,
+      "description_stats": {"HP": 2, "Daño": 5, "Velocidad": 4, "Energía": 3}
+    }
+  },
+  "artillero": {
+    "name": "Artillero",
+    "role": "DPS Ranged",
+    "lore": "Rifle de plasma integrado en el antebrazo. Daño sostenido desde la retaguardia.",
+    "color": [80, 200, 120],
+    "armor_type": "malla",
+    "spells": [
+      "disparo_perforante",
+      "rafaga_plasma",
+      "bomba_emp",
+      "inmovilizar_utilidad",
+      "camuflaje_utilidad",
+      "limpieza_utilidad",
+      "resurreccion_utilidad"
+    ],
+    "stats": {
+      "max_hp": 160,
+      "max_energy": 240,
+      "energy_regen": 10,
+      "base_damage": 70,
+      "move_time_multiplier": 1.0,
+      "armor": 8,
+      "description_stats": {"HP": 2, "Daño": 4, "Velocidad": 3, "Energía": 4}
+    }
+  },
+  "operador": {
+    "name": "Operador",
+    "role": "Support",
+    "lore": "Hackea la Matrix en tiempo real. CC, camuflaje, disrupción de señal.",
+    "color": [200, 160, 50],
+    "armor_type": "nano_fibra",
+    "spells": [
+      "pulso_disruptor",
+      "red_inhibicion",
+      "protocolo_camuflaje",
+      "inmovilizar_utilidad",
+      "camuflaje_utilidad",
+      "limpieza_utilidad",
+      "resurreccion_utilidad"
+    ],
+    "stats": {
+      "max_hp": 150,
+      "max_energy": 280,
+      "energy_regen": 14,
+      "base_damage": 30,
+      "move_time_multiplier": 0.9,
+      "armor": 5,
+      "description_stats": {"HP": 1, "Daño": 1, "Velocidad": 4, "Energía": 5}
+    }
+  },
+  "medico_nano": {
+    "name": "Médico Nano",
+    "role": "Healer",
+    "lore": "Inyector de nanobots fusionado al guante. El único que puede traer de vuelta a los caídos.",
+    "color": [80, 220, 180],
+    "armor_type": "nano_fibra",
+    "spells": [
+      "nano_reparacion",
+      "campo_restauracion",
+      "nanoparticulas",
+      "inmovilizar_utilidad",
+      "camuflaje_utilidad",
+      "limpieza_utilidad",
+      "resurreccion_utilidad"
+    ],
+    "stats": {
+      "max_hp": 170,
+      "max_energy": 300,
+      "energy_regen": 16,
+      "base_damage": 0,
+      "move_time_multiplier": 1.0,
+      "armor": 6,
+      "description_stats": {"HP": 2, "Daño": 0, "Velocidad": 3, "Energía": 5}
+    }
+  }
+}

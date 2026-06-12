@@ -1,0 +1,60 @@
+{
+  "hp_potion": {
+    "id": "hp_potion",
+    "name": "Jeringa de Adrenalina",
+    "type": "consumable",
+    "color": [200, 55, 55],
+    "restore_hp": 50,
+    "restore_mp": 0
+  },
+  "mp_potion": {
+    "id": "mp_potion",
+    "name": "Celda de Energía",
+    "type": "consumable",
+    "color": [55, 105, 215],
+    "restore_hp": 0,
+    "restore_mp": 80
+  },
+  "hp_potion_large": {
+    "id": "hp_potion_large",
+    "name": "Kit Médico",
+    "type": "consumable",
+    "color": [230, 30, 30],
+    "restore_hp": 120,
+    "restore_mp": 0
+  },
+  "mp_potion_large": {
+    "id": "mp_potion_large",
+    "name": "Batería de Alta Capacidad",
+    "type": "consumable",
+    "color": [30, 60, 240],
+    "restore_hp": 0,
+    "restore_mp": 180
+  },
+  "food_ration": {
+    "id": "food_ration",
+    "name": "Ración de Supervivencia",
+    "type": "food",
+    "color": [180, 140, 60],
+    "buff": "hp_regen",
+    "buff_value": 5,
+    "buff_duration": 30
+  },
+  "stim_pack": {
+    "id": "stim_pack",
+    "name": "Estimulante de Combate",
+    "type": "food",
+    "color": [220, 80, 150],
+    "buff": "damage_boost",
+    "buff_value": 0.15,
+    "buff_duration": 20
+  },
+  "scrap": {
+    "id": "scrap",
+    "name": "Chatarra",
+    "type": "material",
+    "color": [175, 145, 65],
+    "stackable": true,
+    "max_stack": 999
+  }
+}

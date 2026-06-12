@@ -1,0 +1,32 @@
+{
+  "ranks": [
+    {"id": "hierro_1",      "name": "Hierro I",      "min_elo": 0,    "max_elo": 299,  "color": [100, 100, 115], "tier": "hierro"},
+    {"id": "hierro_2",      "name": "Hierro II",     "min_elo": 300,  "max_elo": 499,  "color": [110, 110, 125], "tier": "hierro"},
+    {"id": "hierro_3",      "name": "Hierro III",    "min_elo": 500,  "max_elo": 699,  "color": [120, 120, 135], "tier": "hierro"},
+    {"id": "bronce_1",      "name": "Bronce I",      "min_elo": 700,  "max_elo": 899,  "color": [150, 90,  45],  "tier": "bronce"},
+    {"id": "bronce_2",      "name": "Bronce II",     "min_elo": 900,  "max_elo": 1099, "color": [165, 100, 50],  "tier": "bronce"},
+    {"id": "bronce_3",      "name": "Bronce III",    "min_elo": 1100, "max_elo": 1299, "color": [180, 110, 55],  "tier": "bronce"},
+    {"id": "plata_1",       "name": "Plata I",       "min_elo": 1300, "max_elo": 1499, "color": [160, 160, 175], "tier": "plata"},
+    {"id": "plata_2",       "name": "Plata II",      "min_elo": 1500, "max_elo": 1699, "color": [175, 175, 190], "tier": "plata"},
+    {"id": "plata_3",       "name": "Plata III",     "min_elo": 1700, "max_elo": 1899, "color": [190, 190, 205], "tier": "plata"},
+    {"id": "oro_1",         "name": "Oro I",         "min_elo": 1900, "max_elo": 2099, "color": [195, 155, 0],   "tier": "oro"},
+    {"id": "oro_2",         "name": "Oro II",        "min_elo": 2100, "max_elo": 2299, "color": [210, 170, 0],   "tier": "oro"},
+    {"id": "oro_3",         "name": "Oro III",       "min_elo": 2300, "max_elo": 2499, "color": [225, 185, 0],   "tier": "oro"},
+    {"id": "platino_1",     "name": "Platino I",     "min_elo": 2500, "max_elo": 2699, "color": [70,  195, 185], "tier": "platino"},
+    {"id": "platino_2",     "name": "Platino II",    "min_elo": 2700, "max_elo": 2899, "color": [80,  210, 200], "tier": "platino"},
+    {"id": "platino_3",     "name": "Platino III",   "min_elo": 2900, "max_elo": 3099, "color": [90,  225, 215], "tier": "platino"},
+    {"id": "diamante_1",    "name": "Diamante I",    "min_elo": 3100, "max_elo": 3299, "color": [80,  150, 230], "tier": "diamante"},
+    {"id": "diamante_2",    "name": "Diamante II",   "min_elo": 3300, "max_elo": 3499, "color": [90,  165, 245], "tier": "diamante"},
+    {"id": "diamante_3",    "name": "Diamante III",  "min_elo": 3500, "max_elo": 3699, "color": [100, 180, 255], "tier": "diamante"},
+    {"id": "maestro",       "name": "Maestro",       "min_elo": 3700, "max_elo": 3999, "color": [190, 90,  230], "tier": "maestro"},
+    {"id": "gran_maestro",  "name": "Gran Maestro",  "min_elo": 4000, "max_elo": 4299, "color": [230, 80,  110], "tier": "gran_maestro"},
+    {"id": "campeon",       "name": "Campeón",       "min_elo": 4300, "max_elo": 99999,"color": [255, 215, 0],   "tier": "campeon"}
+  ],
+  "elo": {
+    "base_gain":    25,
+    "base_loss":    20,
+    "k_factor":     32,
+    "placement_matches": 10,
+    "placement_start_elo": 1200
+  }
+}

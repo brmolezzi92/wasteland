@@ -1,0 +1,1019 @@
+import { Application, Container, Sprite, Graphics, Text, Assets, Texture, Rectangle } from 'pixi.js';
+import { TileMap, TILE, TILE_SPRITE, TILE_COLOR, SPAWN } from './tilemap';
+import { CLASSES, SPELLS, ITEMS } from '../data';
+
+const DAMAGE_MULT: Record<string, number> = {
+  single_melee: 1.0, single_ranged: 0.85, aoe_targeted: 0.55, aoe_self: 0.45, melee_area: 0.45,
+};
+const CC_AOE_MULT = 0.6;
+const GHOST_DURATION = 18;
+const POTION_CD_KEY = 0.5;
+const POTION_CD_CLICK = 0.4;
+
+// Offsets de alineación del arte del sprite, por clase
+const CLASS_OFFSET: Record<string, { x: number; y: number }> = {
+  baluarte:    { x: -10, y: 10 },
+  cuchilla:    { x: 0,   y: 10 },
+  artillero:   { x: -10, y: 10 },
+  medico_nano: { x: 0,   y: 10 },
+  operador:    { x: 0,   y: 10 },
+};
+
+const col = (c: [number, number, number]) => (c[0] << 16) | (c[1] << 8) | c[2];
+
+type AnimState = 'idle' | 'run';
+
+interface AnimCfg { key: string; frames: number; size: number; }
+interface SpriteCfg { idle: AnimCfg; run: AnimCfg; }
+
+const SPRITE_CFG: Record<string, SpriteCfg> = {
+  // Jugador
+  player:            { idle: { key: 'player_idle',       frames: 4, size: 64 }, run: { key: 'player_run',       frames: 6, size: 64 } },
+  // Enemigos
+  'Bandido Tirador': { idle: { key: 'orc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'orc_rogue_run',    frames: 6, size: 64 } },
+  'Bandido Bruto':   { idle: { key: 'orc_warrior_idle',  frames: 4, size: 32 }, run: { key: 'orc_warrior_run',  frames: 6, size: 64 } },
+  'Torreta':         { idle: { key: 'skel_warrior_idle', frames: 4, size: 32 }, run: { key: 'skel_warrior_run', frames: 6, size: 64 } },
+  'El Devorador':    { idle: { key: 'orc_idle',          frames: 4, size: 32 }, run: { key: 'orc_run',          frames: 6, size: 64 } },
+  // NPCs
+  'Guardia':         { idle: { key: 'npc_knight_idle',   frames: 4, size: 32 }, run: { key: 'npc_knight_run',   frames: 6, size: 64 } },
+  'Explorador':      { idle: { key: 'npc_rogue_idle',    frames: 4, size: 32 }, run: { key: 'npc_rogue_idle',   frames: 4, size: 32 } },
+  'Alquimista':      { idle: { key: 'npc_wizzard_idle',  frames: 4, size: 32 }, run: { key: 'npc_wizzard_idle', frames: 4, size: 32 } },
+};
+
+const MOVE_KEYS: Record<string, [number, number]> = {
+  w: [0, -1], arrowup: [0, -1], s: [0, 1], arrowdown: [0, 1],
+  a: [-1, 0], arrowleft: [-1, 0], d: [1, 0], arrowright: [1, 0],
+};
+
+type CC = 'stun' | 'root' | 'slow' | null;
+
+// Caracteres miden 30px reales en cualquier frame (medido). Scale fijo → tamaño consistente idle↔run.
+const ENTITY_SCALE = 2.0;   // char muestra ~60px (~1 tile alto)
+const BOSS_SCALE   = 3.0;
+
+interface Entity {
+  kind: 'player' | 'enemy' | 'boss' | 'npc';
+  name: string;
+  tileX: number; tileY: number;
+  visX: number; visY: number;
+  tgtX: number; tgtY: number;
+  moving: boolean;
+  hp: number; maxHp: number;
+  alive: boolean;
+  scale: number;
+  sprite: Sprite;
+  hpbar: Graphics;
+  cc: CC; ccTimer: number;
+  moveTimer: number;
+  atkCd: number;
+  hitTimer: number;
+  baseScale: number;
+  facing: number;
+  animState: AnimState;
+  animFrame: number;
+  animTimer: number;
+}
+
+interface GroundItemData {
+  itemId: string; qty: number; tileX: number; tileY: number; t: number;
+}
+
+export interface HudSpell {
+  name: string; cost: number; cooldown: number; cd: number;
+  ready: boolean; damageType: string; color: string; aim: string;
+}
+export interface MinimapDot { tx: number; ty: number; color: string; }
+export interface LogEntry { msg: string; color: string; }
+export interface HudState {
+  className: string; role: string;
+  hp: number; maxHp: number; energy: number; maxEnergy: number;
+  spells: HudSpell[]; pending: number | null;
+  inventory: { itemId: string; qty: number }[]; selectedSlot: number | null;
+  potionKey: number; potionClick: number;
+  isGhost: boolean; ghostTimer: number; cc: CC; ccTimer: number;
+  isInvisible: boolean;
+  logs: LogEntry[];
+  minimap: {
+    mapW: number; mapH: number;
+    playerTx: number; playerTy: number;
+    dots: MinimapDot[];
+  };
+}
+
+export class GameEngine {
+  app: Application;
+  world = new Container();
+  tileLayer = new Container();
+  gridLayer = new Graphics();
+  groundG = new Graphics();
+  entityLayer = new Container();
+  fxLayer = new Container();
+  previewG = new Graphics();
+  overlayG = new Graphics();   // hover target + cursor cargado
+  mouseWX = 0; mouseWY = 0;
+  classOffset = { x: 0, y: 0 };
+  hitstop = 0;                 // micro-freeze al impacto
+  pressedOrder: string[] = []; // dirección más reciente gana
+  map: TileMap;
+  classId: string;
+  cls: any;
+
+  player!: Entity & {
+    energy: number; maxEnergy: number; energyRegen: number; baseDamage: number;
+    armor: number; moveTime: number; spellIds: string[]; spellCd: number[];
+    isGhost: boolean; ghostTimer: number; spawnX: number; spawnY: number;
+    shield: number; shieldTimer: number;
+    isInvisible: boolean; invisTimer: number;
+  };
+  enemies: Entity[] = [];
+  npcs: Entity[] = [];
+  effects: { obj: Container; update: (dt: number) => boolean }[] = [];
+  pendingDamage: { t: number; target: Entity; dmg: number; cc: CC; ccDur: number; wx: number; wy: number }[] = [];
+  pendingAreas: { t: number; wx: number; wy: number; r: number; dmg: number; sp: any; c: number }[] = [];
+
+  keys = new Set<string>();
+  pending: number | null = null;
+  selectedSlot: number | null = 0;
+  inventory: ({ itemId: string; qty: number } | null)[] = [];
+  groundItems: GroundItemData[] = [];
+  potionKey = 0; potionClick = 0;
+  logs: LogEntry[] = [];
+  camX = 0; camY = 0;
+  viewW = 800; viewH = 600;
+  textures: Record<string, Texture> = {};
+  animFrames: Record<string, Texture[]> = {};
+  private _raf = 0;
+  private _inited = false;
+  private _destroyed = false;
+  private _onResize = () => this.resize();
+
+  constructor(classId: string) {
+    this.classId = classId;
+    this.cls = CLASSES[classId];
+    this.map = new TileMap(90, 80, 7);
+    this.app = new Application();
+  }
+
+  async init(host: HTMLElement) {
+    this.viewW = host.clientWidth;
+    this.viewH = host.clientHeight;
+    await this.app.init({
+      width: this.viewW, height: this.viewH, background: 0x0a0806, antialias: false,
+    });
+    // StrictMode puede haber pedido destroy mientras init corría
+    if (this._destroyed) { try { this.app.destroy(true, { children: true }); } catch { /* */ } return; }
+    host.appendChild(this.app.canvas);
+
+    this.world.addChild(this.tileLayer, this.gridLayer, this.groundG, this.entityLayer, this.previewG, this.fxLayer, this.overlayG);
+    this.entityLayer.sortableChildren = true;
+    this.app.stage.addChild(this.world);
+
+    await this.loadTextures();
+    this.buildTiles();
+    this.buildGrid();
+    this.spawnEntities();
+    this.spawnScrap();
+
+    // Input
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    this.app.canvas.addEventListener('pointerdown', this.onPointerDown);
+    this.app.canvas.addEventListener('pointermove', this.onPointerMove);
+    window.addEventListener('resize', this._onResize);
+
+    this.app.ticker.add((tk) => this.update(tk.deltaMS / 1000));
+    this._inited = true;
+  }
+
+  // ── carga ────────────────────────────────────────────────────────────────
+  async loadTextures() {
+    const tileNames = ['floor', 'dirt', 'toxic', 'wall', 'path'];
+    for (const n of tileNames) {
+      try { this.textures[`/assets/tiles/${n}.png`] = await Assets.load(`/assets/tiles/${n}.png`); } catch { /* ignore */ }
+    }
+    const sheets: [string, number, number][] = [
+      ['player_idle', 4, 64], ['player_run',  6, 64],
+      ['orc_rogue_idle',    4, 32], ['orc_rogue_run',    6, 64],
+      ['orc_warrior_idle',  4, 32], ['orc_warrior_run',  6, 64],
+      ['skel_warrior_idle', 4, 32], ['skel_warrior_run', 6, 64],
+      ['orc_idle', 4, 32], ['orc_run', 6, 64],
+      ['npc_knight_idle',  4, 32], ['npc_knight_run',  6, 64],
+      ['npc_rogue_idle',   4, 32],
+      ['npc_wizzard_idle', 4, 32],
+    ];
+    for (const [key, frames, size] of sheets) {
+      try {
+        const base: Texture = await Assets.load(`/assets/sprites/${key}.png`);
+        const sliced: Texture[] = [];
+        for (let i = 0; i < frames; i++)
+          sliced.push(new Texture({ source: base.source, frame: new Rectangle(i * size, 0, size, size) }));
+        this.animFrames[key] = sliced;
+      } catch { /* sprite missing, will fall back to colored box */ }
+    }
+  }
+
+  buildTiles() {
+    for (let ty = 0; ty < this.map.height; ty++)
+      for (let tx = 0; tx < this.map.width; tx++) {
+        const t = this.map.tiles[ty][tx];
+        const tex = this.textures[`/assets/tiles/${TILE_SPRITE[t]}.png`];
+        if (tex) {
+          const s = new Sprite(tex);
+          s.width = TILE; s.height = TILE;
+          s.position.set(tx * TILE, ty * TILE);
+          this.tileLayer.addChild(s);
+        } else {
+          const c = TILE_COLOR[t] ?? 0x4e6e3c;
+          const g = new Graphics().rect(tx * TILE, ty * TILE, TILE, TILE).fill(c);
+          this.tileLayer.addChild(g);
+        }
+      }
+  }
+
+  buildGrid() {
+    const g = this.gridLayer;
+    const L = 5;
+    for (let ty = 0; ty < this.map.height; ty++)
+      for (let tx = 0; tx < this.map.width; tx++) {
+        const x = tx * TILE, y = ty * TILE;
+        g.poly([x, y + L, x, y, x + L, y]);
+        g.poly([x + TILE - L, y, x + TILE, y, x + TILE, y + L]);
+        g.poly([x, y + TILE - L, x, y + TILE, x + L, y + TILE]);
+        g.poly([x + TILE - L, y + TILE, x + TILE, y + TILE, x + TILE, y + TILE - L]);
+      }
+    g.stroke({ width: 2, color: 0xffffff, alpha: 0.45 });
+  }
+
+  makeEntity(kind: Entity['kind'], name: string, tx: number, ty: number,
+             _texUrl: string, hp: number, scale: number): Entity {
+    const cfgKey = kind === 'player' ? 'player' : name;
+    const cfg = SPRITE_CFG[cfgKey];
+    const idleCfg = cfg?.idle;
+    const firstFrames = idleCfg ? this.animFrames[idleCfg.key] : null;
+
+    let spr: Sprite;
+    if (firstFrames?.length) {
+      spr = new Sprite(firstFrames[0]);
+      spr.anchor.set(0.5, 1.0);
+      spr.scale.set(kind === 'boss' ? BOSS_SCALE : ENTITY_SCALE);
+    } else {
+      // Fallback: colored box (no sprite loaded)
+      const FALLBACK_COLORS: Record<string, number> = {
+        'Bandido Tirador': 0xcc7722, 'Bandido Bruto': 0x882211,
+        'Torreta': 0x335566, 'El Devorador': 0x770022,
+      };
+      let boxColor = kind === 'player'
+        ? col((CLASSES[this.classId]?.color ?? [68, 136, 204]) as [number, number, number])
+        : (FALLBACK_COLORS[name] ?? 0xaa3333);
+      const bossH = kind === 'boss' ? TILE * 2 : TILE * 1.5;
+      const bossW = kind === 'boss' ? TILE * 1.5 : TILE;
+      const g = new Graphics();
+      g.rect(-bossW / 2, -bossH, bossW, bossH).fill(boxColor)
+       .rect(-bossW / 2, -bossH, bossW, bossH).stroke({ width: 2, color: 0xffffff, alpha: 0.3 });
+      spr = g as unknown as Sprite;  // Graphics satisfies the positional API we use
+    }
+
+    const hpbar = new Graphics();
+    const cont = new Container();
+    cont.addChild(spr, hpbar);
+    this.entityLayer.addChild(cont);
+    const e: Entity = {
+      kind, name, tileX: tx, tileY: ty, visX: tx * TILE, visY: ty * TILE,
+      tgtX: tx * TILE, tgtY: ty * TILE, moving: false,
+      hp, maxHp: hp, alive: true, scale, sprite: spr, hpbar,
+      cc: null, ccTimer: 0, moveTimer: 0, atkCd: 0,
+      hitTimer: 0, baseScale: 1, facing: 1,
+      animState: 'idle', animFrame: 0, animTimer: 0,
+    };
+    (e as any).cont = cont;
+    return e;
+  }
+
+  spawnEntities() {
+    const { tx: cx, ty: cy } = SPAWN.player;
+    const st = this.cls.stats;
+    const p = this.makeEntity('player', this.cls.name, cx, cy, '', st.max_hp, 1) as any;
+    p.energy = st.max_energy; p.maxEnergy = st.max_energy; p.energyRegen = st.energy_regen;
+    p.baseDamage = st.base_damage; p.armor = st.armor;
+    p.moveTime = 0.25 * (st.move_time_multiplier || 1);
+    p.spellIds = this.cls.spells; p.spellCd = new Array(this.cls.spells.length).fill(0);
+    p.isGhost = false; p.ghostTimer = 0; p.spawnX = cx; p.spawnY = cy;
+    p.shield = 0; p.shieldTimer = 0;
+    p.isInvisible = false; p.invisTimer = 0;
+    this.player = p;
+    this.classOffset = CLASS_OFFSET[this.classId] || { x: 0, y: 0 };
+
+    // NPCs en la base del jugador
+    const NPC_NAMES: Record<string, string> = { knight: 'Guardia', rogue: 'Explorador', wizzard: 'Alquimista' };
+    this.npcs = SPAWN.npcs.map(({ tx, ty, kind }) =>
+      this.makeEntity('npc', NPC_NAMES[kind], tx, ty, '', 999, 1)
+    );
+
+    // Enemigos en mundo abierto + fortaleza
+    this.enemies = SPAWN.enemies.map(({ tx, ty, name, hp }) =>
+      this.makeEntity('enemy', name, tx, ty, '', hp, 1)
+    );
+
+    // Boss en la fortaleza
+    const boss = this.makeEntity('boss', SPAWN.boss.name, SPAWN.boss.tx, SPAWN.boss.ty, '', SPAWN.boss.hp, 1);
+    this.enemies.push(boss);
+
+    // Inventario inicial
+    this.inventory = [
+      { itemId: 'hp_potion', qty: 12 }, { itemId: 'mp_potion', qty: 12 },
+      { itemId: 'hp_potion_large', qty: 6 }, { itemId: 'mp_potion_large', qty: 6 },
+      ...Array(20).fill(null),
+    ];
+  }
+
+  // ── ground items ──────────────────────────────────────────────────────────
+  spawnScrap() {
+    const { tx: cx, ty: cy } = SPAWN.player;
+    let placed = 0, attempts = 0;
+    while (placed < 40 && attempts < 5000) {
+      attempts++;
+      const tx = Math.floor(Math.random() * this.map.width);
+      const ty = Math.floor(Math.random() * this.map.height);
+      if (this.map.isSolid(tx, ty)) continue;
+      if (Math.hypot(tx - cx, ty - cy) < 5) continue;
+      const occupied = [this.player, ...this.enemies, ...this.npcs].some(e => e.tileX === tx && e.tileY === ty);
+      if (occupied) continue;
+      this.groundItems.push({ itemId: 'scrap', qty: 1, tileX: tx, tileY: ty, t: Math.random() * Math.PI * 2 });
+      placed++;
+    }
+  }
+
+  tryPickup() {
+    const p = this.player;
+    if (p.isGhost || !p.alive) return;
+    const idx = this.groundItems.findIndex(gi => gi.tileX === p.tileX && gi.tileY === p.tileY);
+    if (idx === -1) return;
+    const gi = this.groundItems[idx];
+    this.groundItems.splice(idx, 1);
+    this.addItemToInventory(gi.itemId, gi.qty);
+    const name = ITEMS[gi.itemId]?.name ?? gi.itemId;
+    this.floatText(p.visX + TILE / 2, p.visY, `+${gi.qty} ${name}`, 0xffe080);
+  }
+
+  addItemToInventory(itemId: string, qty: number) {
+    const existing = this.inventory.find(s => s?.itemId === itemId);
+    if (existing) { existing.qty += qty; return; }
+    const emptyIdx = this.inventory.findIndex(s => s === null);
+    if (emptyIdx !== -1) this.inventory[emptyIdx] = { itemId, qty };
+  }
+
+  drawGroundItems(dt: number) {
+    const g = this.groundG;
+    g.clear();
+    const p = this.player;
+    for (const gi of this.groundItems) {
+      gi.t += dt;
+      const cx = gi.tileX * TILE + TILE / 2;
+      const cy = gi.tileY * TILE + TILE * 0.72;
+      const pulse = 0.6 + 0.4 * Math.sin(gi.t * 3.2);
+      const item = ITEMS[gi.itemId];
+      const c = item ? col(item.color as [number, number, number]) : 0xaaaaaa;
+      // Sombra
+      g.roundRect(cx - 5, cy - 2, 10, 7, 2).fill({ color: 0x000000, alpha: 0.4 });
+      // Chip
+      g.roundRect(cx - 5, cy - 4, 10, 7, 2).fill({ color: c, alpha: 0.9 });
+      g.roundRect(cx - 5, cy - 4, 10, 7, 2).stroke({ width: 1.5, color: 0xfff0a0, alpha: pulse });
+      // Anillo de pickup cuando el player está encima
+      if (!p.isGhost && p.tileX === gi.tileX && p.tileY === gi.tileY) {
+        const r = 13 + 2 * Math.sin(gi.t * 8);
+        g.circle(cx, cy, r).stroke({ width: 2, color: 0xffe080, alpha: 0.85 });
+      }
+    }
+  }
+
+  // ── input ────────────────────────────────────────────────────────────────
+  onKeyDown = (e: KeyboardEvent) => {
+    const k = e.key.toLowerCase();
+    this.keys.add(k);
+    if (MOVE_KEYS[k] && !this.pressedOrder.includes(k)) this.pressedOrder.push(k);
+    if (e.key === 'Escape') this.cancelCast();
+    if (k === 'u') this.usePotionKey();
+    if (k === ' ') { e.preventDefault(); this.tryPickup(); }
+  };
+  onKeyUp = (e: KeyboardEvent) => {
+    const k = e.key.toLowerCase();
+    this.keys.delete(k);
+    this.pressedOrder = this.pressedOrder.filter((x) => x !== k);
+  };
+
+  // Última dirección presionada que siga apretada (giros instantáneos)
+  readMoveInput(): [number, number] {
+    for (let i = this.pressedOrder.length - 1; i >= 0; i--) {
+      const k = this.pressedOrder[i];
+      if (this.keys.has(k)) return MOVE_KEYS[k];
+    }
+    return [0, 0];
+  }
+
+  addLog(msg: string, color = '#f0e4cc') {
+    this.logs.push({ msg, color });
+    if (this.logs.length > 50) this.logs.shift();
+  }
+
+  onPointerDown = (e: PointerEvent) => {
+    const rect = this.app.canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const wx = sx + this.camX, wy = sy + this.camY;
+    if (e.button === 2) { this.cancelCast(); return; }
+
+    // Sin hechizo cargado: inspect entidad
+    if (this.pending === null) {
+      const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+      const enemy = this.enemyAtTile(tx, ty);
+      if (enemy) {
+        const hostile = enemy.kind === 'boss' ? '⚠ JEFE' : '⚔ Hostil';
+        const color = enemy.kind === 'boss' ? '#ff4444' : '#e06020';
+        this.addLog(`${enemy.name} — HP: ${Math.round(enemy.hp)}/${enemy.maxHp} — ${hostile}`, color);
+        return;
+      }
+      const npc = this.npcs.find(n => n.alive && n.tileX === tx && n.tileY === ty);
+      if (npc) {
+        this.addLog(`${npc.name} — HP: ${npc.hp}/${npc.maxHp} — ✦ Pacífico`, '#78d25a');
+        return;
+      }
+      return;
+    }
+    this.worldClick(wx, wy);
+  };
+  onPointerMove = (e: PointerEvent) => {
+    const rect = this.app.canvas.getBoundingClientRect();
+    this.mouseWX = e.clientX - rect.left + this.camX;
+    this.mouseWY = e.clientY - rect.top + this.camY;
+  };
+
+  // ── API para React ─────────────────────────────────────────────────────────
+  loadSpell(idx: number) {
+    const p = this.player;
+    if (p.isGhost || idx >= p.spellIds.length) return;
+    const sp = SPELLS[p.spellIds[idx]];
+    const cost = sp.energy_cost || 0;
+    if (p.spellCd[idx] > 0 || p.energy < cost) return;
+    const mode = this.targetMode(sp);
+    if (mode === 'instant') { this.castInstant(idx); return; }
+    this.pending = idx;
+    document.body.style.cursor = 'crosshair';
+  }
+  cancelCast() { this.pending = null; document.body.style.cursor = 'default'; }
+
+  selectSlot(i: number) { this.selectedSlot = i; }
+  usePotionKey() { if (this.selectedSlot != null) this.usePotion('key', this.selectedSlot); }
+  usePotionClick(i: number) { this.usePotion('click', i); }
+
+  targetMode(sp: any): 'instant' | 'ground' | 'enemy' | 'ally' {
+    const dt = sp.damage_type;
+    if (['self', 'aoe_self', 'melee_area', 'aoe_heal', 'single_target_heal'].includes(dt)) return 'instant';
+    if (dt === 'resurrect') return 'ally';   // revivir = single target (clic en aliado caído)
+    if (dt === 'aoe_targeted') return 'ground';
+    return 'enemy';
+  }
+
+  isGroundSpell(): boolean {
+    if (this.pending == null) return false;
+    return this.targetMode(SPELLS[this.player.spellIds[this.pending]]) === 'ground';
+  }
+
+  // ── update loop ────────────────────────────────────────────────────────────
+  update(dt: number) {
+    dt = Math.min(dt, 0.05);
+    // Hitstop: micro-freeze que ralentiza la sim brevemente al impactar
+    if (this.hitstop > 0) { this.hitstop -= dt; dt *= 0.18; }
+    this.updatePlayer(dt);
+    for (const e of this.enemies) this.updateEnemy(dt, e);
+    this.updatePendingDamage(dt);
+    this.updatePendingAreas(dt);
+    this.updateEffects(dt);
+    this.updateCamera();
+    this.drawGroundItems(dt);
+    this.syncSprites(dt);
+  }
+
+  updatePlayer(dt: number) {
+    const p = this.player;
+    p.hitTimer = Math.max(0, p.hitTimer - dt);
+    p.energy = Math.min(p.maxEnergy, p.energy + p.energyRegen * dt);
+    for (let i = 0; i < p.spellCd.length; i++) p.spellCd[i] = Math.max(0, p.spellCd[i] - dt);
+    this.potionKey = Math.max(0, this.potionKey - dt);
+    this.potionClick = Math.max(0, this.potionClick - dt);
+    if (p.ccTimer > 0) { p.ccTimer -= dt; if (p.ccTimer <= 0) p.cc = null; }
+    if (p.shieldTimer > 0) { p.shieldTimer -= dt; if (p.shieldTimer <= 0) p.shield = 0; }
+    if (p.invisTimer > 0) { p.invisTimer -= dt; if (p.invisTimer <= 0) p.isInvisible = false; }
+
+    if (p.isGhost) {
+      p.ghostTimer -= dt;
+      if (p.ghostTimer <= 0) this.respawn();
+      this.moveEntity(dt, p, p.moveTime, true);
+      return;
+    }
+    this.moveEntity(dt, p, p.moveTime, false);
+  }
+
+  moveEntity(dt: number, e: Entity, moveTime: number, ghost: boolean) {
+    const blocked = !ghost && (e.cc === 'stun' || e.cc === 'root');
+    let dx = 0, dy = 0;
+    if (e.kind === 'player' && !blocked) {
+      [dx, dy] = this.readMoveInput();
+      if (dx !== 0) e.facing = dx > 0 ? 1 : -1;
+    }
+    let speed = TILE / moveTime;
+    if (!ghost && e.cc === 'slow') speed *= 0.4;
+
+    if (!e.moving && (dx || dy)) this.tryMove(e, dx, dy, ghost);
+    if (e.moving) {
+      const ddx = e.tgtX - e.visX, ddy = e.tgtY - e.visY;
+      const dist = Math.hypot(ddx, ddy), step = speed * dt;
+      if (step >= dist) {
+        e.visX = e.tgtX; e.visY = e.tgtY; e.moving = false;
+        if (e.kind === 'player' && (dx || dy)) this.tryMove(e, dx, dy, ghost);
+      } else { e.visX += ddx / dist * step; e.visY += ddy / dist * step; }
+    }
+  }
+
+  tryMove(e: Entity, dx: number, dy: number, ghost: boolean): boolean {
+    const nx = e.tileX + dx, ny = e.tileY + dy;
+    if (this.map.isSolid(nx, ny)) return false;
+    if (!ghost) {
+      const all = e.kind === 'player' ? this.enemies : [this.player, ...this.enemies];
+      for (const o of all) if (o !== e && o.alive && o.tileX === nx && o.tileY === ny) return false;
+    }
+    e.tileX = nx; e.tileY = ny; e.tgtX = nx * TILE; e.tgtY = ny * TILE; e.moving = true;
+    return true;
+  }
+
+  updateEnemy(dt: number, e: Entity) {
+    if (!e.alive) return;
+    e.hitTimer = Math.max(0, e.hitTimer - dt);
+    if (e.ccTimer > 0) { e.ccTimer -= dt; if (e.ccTimer <= 0) e.cc = null; }
+    e.atkCd = Math.max(0, e.atkCd - dt);
+    e.moveTimer = Math.max(0, e.moveTimer - dt);
+    if (e.cc === 'stun') return;
+    const p = this.player;
+    const dist = Math.hypot(e.tileX - p.tileX, e.tileY - p.tileY);
+    if (p.tileX !== e.tileX) e.facing = p.tileX > e.tileX ? 1 : -1;
+    const melee = e.kind === 'boss' ? 1.6 : 1.5;
+    const detect = e.kind === 'boss' ? 18 : 9;
+
+    // Fantasma (cuántico) = invisible total. Camuflaje = solo detectado a melee.
+    const visible = !p.isGhost && (!p.isInvisible || dist <= 1.5);
+
+    if (visible && dist <= melee && e.atkCd <= 0) {
+      const dmg = e.kind === 'boss' ? 22 : 9;
+      this.damagePlayer(dmg);
+      e.atkCd = e.kind === 'boss' ? 1.0 : 1.4;
+    }
+    // Boss ranged
+    if (visible && e.kind === 'boss' && dist <= 9 && dist > 1.6 && e.atkCd <= 0) {
+      this.fireProjectileAtPlayer(e, 18, [255, 80, 60]);
+      e.atkCd = 1.6;
+    }
+    const canMove = e.cc !== 'root';
+    if (visible && canMove && e.moveTimer <= 0 && !e.moving && dist <= detect && dist > melee) {
+      const sx = Math.sign(p.tileX - e.tileX), sy = Math.sign(p.tileY - e.tileY);
+      const tries = Math.abs(p.tileX - e.tileX) >= Math.abs(p.tileY - e.tileY)
+        ? [[sx, 0], [0, sy]] : [[0, sy], [sx, 0]];
+      for (const [mx, my] of tries) if ((mx || my) && this.tryMove(e, mx, my, false)) break;
+      e.moveTimer = (e.cc === 'slow' ? 0.9 : 0.5);
+    }
+    const mt = e.kind === 'boss' ? 0.38 : 0.30;
+    this.moveEntity(dt, e, mt, false);
+  }
+
+  // ── combate ────────────────────────────────────────────────────────────────
+  worldClick(wx: number, wy: number) {
+    if (this.pending == null) return;
+    const sp = SPELLS[this.player.spellIds[this.pending]];
+    const mode = this.targetMode(sp);
+    const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+    if (mode === 'ground') {
+      this.castGround(sp, wx, wy); this.confirmCast(); this.cancelCast();
+    } else if (mode === 'ally') {
+      // Revivir: single-target sobre un aliado en Proyección Cuántica.
+      // En práctica solo-jugador no hay aliados caídos.
+      const ally = this.allyGhostAtTile(tx, ty);
+      if (ally) { this.reviveAlly(ally); this.confirmCast(); this.cancelCast(); }
+      else { this.floatText(wx, wy, 'Sin aliado caído', 0xc8c850); this.cancelCast(); }
+    } else {
+      const enemy = this.enemyAtTile(tx, ty);
+      if (enemy) { this.castEnemy(sp, enemy); this.confirmCast(); this.cancelCast(); }
+      else { this.floatText(wx, wy, '¡Sin impacto!', 0xff6464); this.cancelCast(); }
+    }
+  }
+
+  confirmCast() {
+    const idx = this.pending!; const sp = SPELLS[this.player.spellIds[idx]];
+    this.player.energy -= sp.energy_cost || 0;
+    this.player.spellCd[idx] = sp.cooldown || 1.5;
+  }
+
+  castInstant(idx: number) {
+    const sp = SPELLS[this.player.spellIds[idx]]; const p = this.player;
+    const dt = sp.damage_type; const c = col((sp.color as any) || [200, 200, 200]);
+    const aoeR = (sp as any).aoe_radius || 64;
+    const pcx = p.visX + TILE / 2, pcy = p.visY + TILE / 2;
+    if (dt === 'self') {
+      if ((sp as any).shield) { p.shield = (sp as any).shield; p.shieldTimer = (sp as any).shield_duration || 5; }
+      if ((sp as any).invisible_duration) {
+        p.isInvisible = true; p.invisTimer = (sp as any).invisible_duration;
+        this.floatText(pcx, pcy - TILE, 'CAMUFLAJE', 0xb4dc64);
+      }
+      if ((sp as any).cleanse) {
+        p.cc = null; p.ccTimer = 0;
+        this.floatText(pcx, pcy - TILE, 'CC LIMPIADO', 0x64dcff);
+      }
+      this.explosion(pcx, pcy, c, aoeR);
+    } else if (dt === 'single_target_heal' || dt === 'aoe_heal') {
+      let heal = (sp as any).heal_base || 0;
+      if (dt === 'aoe_heal') heal = Math.round(heal * ((sp as any).heal_multiplier || 0.55));
+      p.hp = Math.min(p.maxHp, p.hp + heal);
+      this.floatText(pcx, pcy - TILE, `+${heal}`, 0x78dc8c);
+      this.explosion(pcx, pcy, c, aoeR);
+    } else {
+      const dmg = this.calcDamage(sp);
+      this.explosion(pcx, pcy, c, aoeR);
+      this.damageRadius(pcx, pcy, aoeR, dmg, sp);
+    }
+    this.player.energy -= sp.energy_cost || 0;
+    this.player.spellCd[idx] = sp.cooldown || 1.5;
+  }
+
+  castGround(sp: any, wx: number, wy: number) {
+    this.player.isInvisible = false; this.player.invisTimer = 0;
+    const c = col(sp.color || [200, 200, 200]);
+    const aoeR = sp.aoe_radius || 96;
+    const dmg = this.calcDamage(sp);
+    // Telegraph: avisa el área; el daño cae tras el delay (esquivable).
+    const delay = 0.35;
+    this.aoeTelegraph(wx, wy, c, aoeR, delay);
+    this.pendingAreas.push({ t: delay, wx, wy, r: aoeR, dmg, sp, c });
+  }
+
+  updatePendingAreas(dt: number) {
+    const keep: typeof this.pendingAreas = [];
+    for (const a of this.pendingAreas) {
+      a.t -= dt;
+      if (a.t <= 0) {
+        this.aoeIndicator(a.wx, a.wy, a.c, a.r);   // flash de impacto
+        this.damageRadius(a.wx, a.wy, a.r, a.dmg, a.sp);
+      } else keep.push(a);
+    }
+    this.pendingAreas = keep;
+  }
+
+  // Tiles de aviso que pulsan durante el delay del AoE
+  aoeTelegraph(x: number, y: number, c: number, max: number, dur: number) {
+    const cells = this.tilesInRadius(x, y, max);
+    const g = new Graphics(); this.fxLayer.addChild(g); let t = 0;
+    this.effects.push({ obj: g, update: (dt) => {
+      t += dt; const k = t / dur;
+      const a = 0.12 + 0.18 * Math.abs(Math.sin(t * 12));   // pulso
+      g.clear();
+      for (const [tx, ty] of cells) g.rect(tx * TILE + 1, ty * TILE + 1, TILE - 2, TILE - 2);
+      g.fill({ color: c, alpha: a }).stroke({ width: 2, color: c, alpha: 0.5 + 0.4 * k });
+      return t >= dur;
+    }});
+  }
+
+  tilesInRadius(x: number, y: number, max: number): [number, number][] {
+    const ctx = Math.floor(x / TILE), cty = Math.floor(y / TILE);
+    const span = Math.ceil(max / TILE) + 1;
+    const cells: [number, number][] = [];
+    for (let ty = cty - span; ty <= cty + span; ty++)
+      for (let tx = ctx - span; tx <= ctx + span; tx++) {
+        const cxp = tx * TILE + TILE / 2, cyp = ty * TILE + TILE / 2;
+        if (Math.hypot(cxp - x, cyp - y) <= max) cells.push([tx, ty]);
+      }
+    return cells;
+  }
+
+  castEnemy(sp: any, enemy: Entity) {
+    this.player.isInvisible = false; this.player.invisTimer = 0;
+    const c = col(sp.color || [200, 200, 200]);
+    const dmg = this.calcDamage(sp);
+    const tx = enemy.visX + TILE / 2, ty = enemy.visY + TILE / 2;
+    const pcx = this.player.visX + TILE / 2, pcy = this.player.visY + TILE / 2;
+    if (sp.effect === 'projectile') {
+      this.projectile(pcx, pcy, tx, ty, c);
+      const travel = Math.hypot(tx - pcx, ty - pcy) / 600;
+      this.pendingDamage.push({ t: travel, target: enemy, dmg, cc: sp.cc || null, ccDur: sp.cc_duration || 0, wx: tx, wy: ty });
+    } else {
+      this.explosion(tx, ty, c, 44);
+      this.hitEntity(enemy, dmg, tx, ty, true);
+      if (sp.cc) this.applyCC(enemy, sp.cc, sp.cc_duration || 1.5);
+    }
+  }
+
+  calcDamage(sp: any): number {
+    return Math.max(1, Math.round(this.player.baseDamage * (DAMAGE_MULT[sp.damage_type] ?? 1)));
+  }
+
+  // Aplica daño a un hostil + todo el "impacto" (flash, pop, número, hitstop, shake)
+  hitEntity(e: Entity, dmg: number, wx: number, wy: number, impactful = true) {
+    if (dmg <= 0) return;
+    e.hp = Math.max(0, e.hp - dmg);
+    e.hitTimer = 0.13;
+    this.floatText(wx, wy - TILE, `-${dmg}`, 0xff5050);
+    if (impactful) { this.hitstop = Math.max(this.hitstop, 0.045); }
+    this.addLog(`Atacaste a ${e.name} por ${dmg}. HP restante: ${Math.round(e.hp)}/${e.maxHp}`, '#ffb43c');
+    if (e.hp <= 0) { e.alive = false; this.addLog(`${e.name} fue eliminado.`, '#ff4444'); }
+  }
+
+  damageRadius(wx: number, wy: number, r: number, dmg: number, sp: any) {
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      const ex = e.visX + TILE / 2, ey = e.visY + TILE / 2;
+      if (Math.hypot(ex - wx, ey - wy) <= r) {
+        this.hitEntity(e, dmg, ex, ey, false);   // AoE: menos énfasis de impacto por target
+        if (sp.cc) this.applyCC(e, sp.cc, (sp.cc_duration || 1.5) * CC_AOE_MULT);
+      }
+    }
+  }
+
+  applyCC(e: Entity, cc: CC, dur: number) {
+    if (!e.alive) return;
+    if (e.cc === 'stun' && cc !== 'stun') return;
+    e.cc = cc; e.ccTimer = dur;
+    const ex = e.visX + TILE / 2, ey = e.visY + TILE / 2;
+    this.floatText(ex, ey - TILE * 1.5, cc!.toUpperCase(),
+      cc === 'stun' ? 0xffe632 : cc === 'root' ? 0x50c8ff : 0xa064ff);
+  }
+
+  enemyAtTile(tx: number, ty: number): Entity | null {
+    for (const e of this.enemies) if (e.alive && e.tileX === tx && e.tileY === ty) return e;
+    return null;
+  }
+
+  // En PvP esto buscará aliados caídos; en práctica solo-jugador no hay aliados.
+  allyGhostAtTile(_tx: number, _ty: number): Entity | null { return null; }
+  reviveAlly(ally: Entity) {
+    ally.hp = Math.round(ally.maxHp * 0.4);
+    const wx = ally.visX + TILE / 2, wy = ally.visY + TILE;
+    this.explosion(wx, wy, 0xdcdc50, 60);
+    this.floatText(wx, wy - TILE, 'REMATERIALIZADO', 0xdcdc50);
+  }
+
+  fireProjectileAtPlayer(from: Entity, dmg: number, c: [number, number, number]) {
+    const pcx = this.player.visX + TILE / 2, pcy = this.player.visY + TILE / 2;
+    const fx = from.visX + TILE / 2, fy = from.visY + TILE / 2;
+    this.projectile(fx, fy, pcx, pcy, col(c));
+    const travel = Math.hypot(pcx - fx, pcy - fy) / 500;
+    this.pendingDamage.push({ t: travel, target: this.player, dmg, cc: null, ccDur: 0, wx: pcx, wy: pcy });
+  }
+
+  damagePlayer(dmg: number) {
+    const p = this.player;
+    p.isInvisible = false; p.invisTimer = 0;
+    if (p.shield > 0) { const a = Math.min(p.shield, dmg); p.shield -= a; dmg -= a; }
+    const red = Math.max(0, dmg - Math.floor(p.armor / 3));
+    p.hp = Math.max(0, p.hp - red);
+    const pcx = p.visX + TILE / 2, pcy = p.visY + TILE / 2;
+    if (red > 0) {
+      this.floatText(pcx, pcy - TILE, `-${red}`, 0xff5a5a);
+      p.hitTimer = 0.13;
+      this.addLog(`Recibiste ${red} de daño. HP: ${Math.round(p.hp)}/${p.maxHp}`, '#ff6060');
+    }
+    if (p.hp <= 0 && !p.isGhost) { this.addLog('Fuiste eliminado. Respawn en 18s…', '#ff4444'); this.die(); }
+  }
+
+  die() { const p = this.player; p.isGhost = true; p.ghostTimer = GHOST_DURATION; p.hp = 0; p.cc = null; p.sprite.alpha = 0.45; }
+  respawn() {
+    const p = this.player; p.isGhost = false; p.ghostTimer = 0;
+    p.hp = Math.round(p.maxHp * 0.4); p.energy = Math.round(p.maxEnergy * 0.2);
+    p.tileX = p.spawnX; p.tileY = p.spawnY; p.visX = p.spawnX * TILE; p.visY = p.spawnY * TILE;
+    p.tgtX = p.visX; p.tgtY = p.visY; p.moving = false; p.sprite.alpha = 1;
+  }
+
+  updatePendingDamage(dt: number) {
+    const keep: typeof this.pendingDamage = [];
+    for (const pd of this.pendingDamage) {
+      pd.t -= dt;
+      if (pd.t <= 0) {
+        if (pd.target === this.player) this.damagePlayer(pd.dmg);
+        else if (pd.target.alive) {
+          this.hitEntity(pd.target, pd.dmg, pd.wx, pd.wy, true);
+          if (pd.cc) this.applyCC(pd.target, pd.cc, pd.ccDur);
+        }
+        this.explosion(pd.wx, pd.wy, 0xffaa40, 34);
+      } else keep.push(pd);
+    }
+    this.pendingDamage = keep;
+  }
+
+  // ── potions ──────────────────────────────────────────────────────────────
+  usePotion(method: 'key' | 'click', idx: number) {
+    if ((method === 'key' ? this.potionKey : this.potionClick) > 0) return;
+    const slot = this.inventory[idx]; if (!slot) return;
+    const data = ITEMS[slot.itemId]; if (!data || data.type !== 'consumable') return;
+    if (data.restore_hp) this.player.hp = Math.min(this.player.maxHp, this.player.hp + data.restore_hp);
+    if (data.restore_mp) this.player.energy = Math.min(this.player.maxEnergy, this.player.energy + data.restore_mp);
+    slot.qty--; if (slot.qty <= 0) this.inventory[idx] = null;
+    if (method === 'key') this.potionKey = POTION_CD_KEY; else this.potionClick = POTION_CD_CLICK;
+  }
+
+  // ── efectos (Pixi) ─────────────────────────────────────────────────────────
+  projectile(x0: number, y0: number, x1: number, y1: number, c: number) {
+    const g = new Graphics(); this.fxLayer.addChild(g);
+    const d = Math.hypot(x1 - x0, y1 - y0) || 1; const sp = 600;
+    const vx = (x1 - x0) / d * sp, vy = (y1 - y0) / d * sp;
+    let x = x0, y = y0;
+    this.effects.push({ obj: g, update: (dt) => {
+      x += vx * dt; y += vy * dt;
+      g.clear().circle(x, y, 7).fill(c).circle(x, y, 7).stroke({ width: 2, color: 0xffffff });
+      return ((x1 - x) * vx + (y1 - y) * vy) <= 0;
+    }});
+  }
+  explosion(x: number, y: number, c: number, max: number) {
+    const g = new Graphics(); this.fxLayer.addChild(g); let t = 0; const dur = 0.38;
+    this.effects.push({ obj: g, update: (dt) => {
+      t += dt; const k = t / dur; const r = Math.max(1, max * k);
+      g.clear().circle(x, y, r).stroke({ width: Math.max(1, 5 * (1 - k)), color: c, alpha: 1 - k });
+      return t >= dur;
+    }});
+  }
+  aoeIndicator(x: number, y: number, c: number, max: number) {
+    const cells = this.tilesInRadius(x, y, max);   // rasterizado cuadrado
+    const g = new Graphics(); this.fxLayer.addChild(g); let t = 0; const dur = 0.5;
+    this.effects.push({ obj: g, update: (dt) => {
+      t += dt; const k = t / dur; g.clear();
+      for (const [tx, ty] of cells) g.rect(tx * TILE + 1, ty * TILE + 1, TILE - 2, TILE - 2);
+      g.fill({ color: c, alpha: 0.28 * (1 - k) }).stroke({ width: 2, color: c, alpha: 0.7 * (1 - k) });
+      return t >= dur;
+    }});
+  }
+  floatText(x: number, y: number, text: string, c: number) {
+    const t = new Text({ text, style: { fontFamily: 'Oswald, sans-serif', fontSize: 24, fontWeight: '700', fill: c, stroke: { color: 0x000000, width: 4 } } });
+    t.anchor.set(0.5); t.position.set(x, y); this.fxLayer.addChild(t);
+    let life = 0; const dur = 1.0;
+    this.effects.push({ obj: t, update: (dt) => {
+      life += dt; const k = life / dur;
+      // Pop: salta a 1.25 y asienta a 1.0
+      const s = k < 0.18 ? 0.7 + (k / 0.18) * 0.55 : 1.25 - Math.min(1, (k - 0.18) / 0.2) * 0.25;
+      t.scale.set(s);
+      t.y -= 30 * dt; t.alpha = 1 - k * k;
+      return life >= dur;
+    }});
+  }
+  updateEffects(dt: number) {
+    this.effects = this.effects.filter((fx) => {
+      const done = fx.update(dt); if (done) fx.obj.destroy(); return !done;
+    });
+  }
+
+  // ── cámara + sprites ────────────────────────────────────────────────────────
+  updateCamera() {
+    const p = this.player;
+    this.camX = Math.max(0, Math.min(p.visX + TILE / 2 - this.viewW / 2, this.map.width * TILE - this.viewW));
+    this.camY = Math.max(0, Math.min(p.visY + TILE / 2 - this.viewH / 2, this.map.height * TILE - this.viewH));
+    this.world.x = -this.camX; this.world.y = -this.camY;
+  }
+
+  drawHpBar(e: Entity) {
+    const g = e.hpbar; g.clear();
+    if (!e.alive || e.kind === 'player') return;
+    const bossW = e.kind === 'boss' ? TILE * 1.5 : TILE;
+    const bossH = e.kind === 'boss' ? TILE * 2 : TILE * 1.5;
+    // cont is positioned at entity bottom-center, so these local coords are above the sprite
+    const x = -bossW / 2, y = -bossH - 8;
+    g.rect(x, y, bossW, 5).fill(0x1a0808);
+    g.rect(x, y, bossW * (e.hp / e.maxHp), 5).fill(e.kind === 'boss' ? 0xc83250 : 0xc83232);
+  }
+
+  stepAnim(e: Entity, dt: number) {
+    const cfgKey = (e.kind === 'player') ? 'player' : e.name;
+    const cfg = SPRITE_CFG[cfgKey];
+    if (!cfg) return;
+
+    const newState: AnimState = e.moving ? 'run' : 'idle';
+    if (newState !== e.animState) { e.animState = newState; e.animFrame = 0; e.animTimer = 0; }
+
+    const anim = newState === 'run' ? cfg.run : cfg.idle;
+    const fps = newState === 'run' ? 10 : 6;
+    e.animTimer += dt;
+    if (e.animTimer >= 1 / fps) {
+      e.animTimer -= 1 / fps;
+      e.animFrame = (e.animFrame + 1) % anim.frames;
+    }
+
+    const frames = this.animFrames[anim.key];
+    if (frames?.length) {
+      (e.sprite as Sprite).texture = frames[Math.min(e.animFrame, frames.length - 1)];
+    }
+
+    const pop = e.hitTimer > 0 ? 1 + (e.hitTimer / 0.13) * 0.16 : 1;
+    const base = e.kind === 'boss' ? BOSS_SCALE : ENTITY_SCALE;
+    e.sprite.scale.x = e.facing * base * pop;
+    e.sprite.scale.y = base * pop;
+  }
+
+  syncSprites(dt: number) {
+    const place = (e: Entity) => {
+      const cont = (e as any).cont as Container;
+      cont.visible = e.alive;
+      const yOff = e.kind === 'player' ? this.classOffset.y : 0;
+      cont.x = e.visX + TILE / 2;
+      cont.y = e.visY + TILE + yOff;
+      cont.zIndex = e.visY + TILE;
+      this.drawHpBar(e);
+      this.stepAnim(e, dt);
+      (e.sprite as any).tint = e.hitTimer > 0 ? 0xffd8c8
+        : e.cc === 'stun' ? 0xffe632 : e.cc === 'slow' ? 0x9a8a68 : 0xffffff;
+    };
+    place(this.player);
+    this.player.sprite.alpha = this.player.isGhost ? 0.35 : this.player.isInvisible ? 0.3 : 1;
+    for (const e of this.enemies) place(e);
+    for (const n of this.npcs) place(n);
+    this.drawPreview();
+    this.drawOverlay();
+  }
+
+  // ── overlay: hover del objetivo + cursor cargado ───────────────────────────
+  drawOverlay() {
+    const g = this.overlayG; g.clear();
+    if (this.pending == null) return;
+    const sp = SPELLS[this.player.spellIds[this.pending]] as any;
+    const c = col(sp.color || [230, 160, 40]);
+    const mode = this.targetMode(sp);
+    const tx = Math.floor(this.mouseWX / TILE), ty = Math.floor(this.mouseWY / TILE);
+
+    // Highlight del tile objetivo (solo single-target: el hitbox es el tile)
+    if (mode === 'enemy' || mode === 'ally') {
+      const target = mode === 'enemy' ? this.enemyAtTile(tx, ty) : this.allyGhostAtTile(tx, ty);
+      const valid = !!target;
+      const hc = valid ? 0x66e06a : 0xc85a4a;   // verde válido / rojo inválido
+      g.rect(tx * TILE + 2, ty * TILE + 2, TILE - 4, TILE - 4)
+        .fill({ color: hc, alpha: valid ? 0.22 : 0.10 })
+        .stroke({ width: 2, color: hc, alpha: valid ? 0.9 : 0.4 });
+    }
+    // Cursor "cargado": anillo del color de la habilidad
+    g.circle(this.mouseWX, this.mouseWY, 11).stroke({ width: 2, color: c, alpha: 0.9 });
+    g.circle(this.mouseWX, this.mouseWY, 4).fill({ color: c, alpha: 0.9 });
+  }
+
+  // ── preview de área rasterizada a tiles ("círculo con bordes cuadrados") ────
+  drawPreview() {
+    const g = this.previewG; g.clear();
+    if (!this.isGroundSpell()) return;
+    const sp = SPELLS[this.player.spellIds[this.pending!]] as any;
+    const r = sp.aoe_radius || 96;
+    const c = col(sp.color || [220, 160, 40]);
+    const wx = this.mouseWX, wy = this.mouseWY;
+    const ctx = Math.floor(wx / TILE), cty = Math.floor(wy / TILE);
+    const span = Math.ceil(r / TILE) + 1;
+    for (let ty = cty - span; ty <= cty + span; ty++)
+      for (let tx = ctx - span; tx <= ctx + span; tx++) {
+        const cxp = tx * TILE + TILE / 2, cyp = ty * TILE + TILE / 2;
+        if (Math.hypot(cxp - wx, cyp - wy) <= r) {
+          g.rect(tx * TILE + 1, ty * TILE + 1, TILE - 2, TILE - 2);
+        }
+      }
+    g.fill({ color: c, alpha: 0.18 }).stroke({ width: 1.5, color: c, alpha: 0.55 });
+  }
+
+  getHud(): HudState {
+    const p = this.player;
+    const aimLabel = (dt: string) => ['self', 'aoe_self', 'melee_area', 'aoe_heal', 'single_target_heal'].includes(dt)
+      ? 'instantáneo' : dt === 'aoe_targeted' ? 'área' : dt === 'resurrect' ? 'aliado' : 'objetivo';
+    const spells: HudSpell[] = p.spellIds.map((id, i) => {
+      const s = SPELLS[id]; const cost = s.energy_cost || 0;
+      return {
+        name: s.name, cost, cooldown: s.cooldown, cd: p.spellCd[i],
+        ready: p.spellCd[i] <= 0 && p.energy >= cost,
+        damageType: s.damage_type, color: `rgb(${s.color.join(',')})`, aim: aimLabel(s.damage_type),
+      };
+    });
+    const dots: MinimapDot[] = [];
+    for (const e of this.enemies) if (e.alive) dots.push({ tx: e.tileX, ty: e.tileY, color: e.kind === 'boss' ? '#ff4444' : '#e06020' });
+    for (const n of this.npcs)    if (n.alive) dots.push({ tx: n.tileX, ty: n.tileY, color: '#78d25a' });
+    return {
+      className: this.cls.name, role: this.cls.role,
+      hp: Math.round(p.hp), maxHp: p.maxHp, energy: Math.round(p.energy), maxEnergy: p.maxEnergy,
+      spells, pending: this.pending,
+      inventory: this.inventory.map((s) => s ? { itemId: s.itemId, qty: s.qty } : null).filter(Boolean) as any,
+      selectedSlot: this.selectedSlot,
+      potionKey: this.potionKey, potionClick: this.potionClick,
+      isGhost: p.isGhost, ghostTimer: p.ghostTimer, cc: p.cc, ccTimer: p.ccTimer,
+      isInvisible: p.isInvisible,
+      logs: this.logs.slice(-8),
+      minimap: { mapW: this.map.width, mapH: this.map.height, playerTx: p.tileX, playerTy: p.tileY, dots },
+    };
+  }
+
+  resize() {
+    const host = this.app.canvas.parentElement; if (!host) return;
+    this.viewW = host.clientWidth; this.viewH = host.clientHeight;
+    this.app.renderer.resize(this.viewW, this.viewH);
+  }
+
+  destroy() {
+    this._destroyed = true;
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('resize', this._onResize);
+    cancelAnimationFrame(this._raf);
+    document.body.style.cursor = 'default';
+    if (this._inited) { try { this.app.destroy(true, { children: true }); } catch { /* */ } }
+  }
+}
