@@ -150,10 +150,12 @@ export default function Game() {
         if (i >= 0) presenceIds.splice(i, 1);
         updateHost();
       },
-      (states, items) => {
+      (states, items, zoneIdx) => {
         if (!engine.isHost) {
-          engine.applyEnemyState(states as any);
-          if (items) engine.applyGroundItemsState(items as any);
+          // Solo aplicar si la zona coincide (evita sobrescribir items de zona incorrecta)
+          const sameZone = zoneIdx === undefined || zoneIdx === engine.currentZone;
+          if (sameZone) engine.applyEnemyState(states as any);
+          if (sameZone && items) engine.applyGroundItemsState(items as any);
         }
       },
       (ids) => {
@@ -170,7 +172,7 @@ export default function Game() {
             (evt.cc as any) ?? null,
             (evt.ccDur as number) ?? 0,
           );
-          broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState());
+          broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState(), engine.currentZone);
         }
         // Host: un jugador remoto recogió un item → eliminar del mundo autoritativo
         if (evt.type === 'pickup' && engine.isHost) {
@@ -245,7 +247,7 @@ export default function Game() {
           enemyBroadcastTimer += dt;
           if (enemyBroadcastTimer >= ENEMY_BROADCAST_INTERVAL) {
             enemyBroadcastTimer = 0;
-            if (engine.isHost) broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState());
+            if (engine.isHost) broadcastEnemyState(engine.getEnemyState(), engine.getGroundItemsState(), engine.currentZone);
           }
 
           // Ping every 5s

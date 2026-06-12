@@ -710,32 +710,56 @@ export class GameEngine {
     e.atkCd = Math.max(0, e.atkCd - dt);
     e.moveTimer = Math.max(0, e.moveTimer - dt);
     if (e.cc === 'stun') return;
+
     const p = this.player;
-    const dist = Math.hypot(e.tileX - p.tileX, e.tileY - p.tileY);
-    if (p.tileX !== e.tileX) e.facing = p.tileX > e.tileX ? 1 : -1;
-    const melee = e.kind === 'boss' ? 1.6 : 1.5;
-    const detect = e.kind === 'boss' ? 18 : 9;
+    const localDist = Math.hypot(e.tileX - p.tileX, e.tileY - p.tileY);
+    const localVisible = !p.isGhost && (!p.isInvisible || localDist <= 1.5);
 
-    // Fantasma (cuántico) = invisible total. Camuflaje = solo detectado a melee.
-    const visible = !p.isGhost && (!p.isInvisible || dist <= 1.5);
-
-    if (visible && dist <= melee && e.atkCd <= 0) {
-      const dmg = e.kind === 'boss' ? 22 : 9;
-      this.damagePlayer(dmg);
-      e.atkCd = e.kind === 'boss' ? 1.0 : 1.4;
+    // ── Find nearest target: local player + all remote players ────────────────
+    let tgtTx = p.tileX, tgtTy = p.tileY;
+    let tgtIsLocal = true;
+    let minDist = localVisible ? localDist : Infinity;
+    for (const [, rp] of this.remotePlayers) {
+      const rtx = Math.round(rp.tgtX / TILE), rty = Math.round(rp.tgtY / TILE);
+      const d = Math.hypot(e.tileX - rtx, e.tileY - rty);
+      if (d < minDist) { minDist = d; tgtTx = rtx; tgtTy = rty; tgtIsLocal = false; }
     }
-    // Boss ranged
-    if (visible && e.kind === 'boss' && dist <= 9 && dist > 1.6 && e.atkCd <= 0) {
-      this.fireProjectileAtPlayer(e, 18, [255, 80, 60]);
+    const dist = minDist;
+    const targetVisible = dist < Infinity;
+
+    if (tgtTx !== e.tileX) e.facing = tgtTx > e.tileX ? 1 : -1;
+    const melee  = e.kind === 'boss' ? 1.6 : 1.5;
+    const detect = e.kind === 'boss' ? 18  : 9;
+
+    // ── Melee attack ──────────────────────────────────────────────────────────
+    if (targetVisible && dist <= melee && e.atkCd <= 0) {
+      const dmg = e.kind === 'boss' ? 22 : 9;
+      e.atkCd = e.kind === 'boss' ? 1.0 : 1.4;
+      if (tgtIsLocal) this.damagePlayer(dmg);
+      // Remote players: damage is applied on their own client (they run damagePlayer locally
+      // because the non-host also calls damagePlayer when an enemy overlaps them)
+    }
+    // ── Boss ranged: fires at nearest visible target ───────────────────────────
+    if (targetVisible && e.kind === 'boss' && dist <= 9 && dist > 1.6 && e.atkCd <= 0) {
+      if (tgtIsLocal) {
+        this.fireProjectileAtPlayer(e, 18, [255, 80, 60]);
+      } else {
+        // Visual only on host; damage handled on remote client
+        const wx = tgtTx * TILE + TILE / 2, wy = tgtTy * TILE + TILE / 2;
+        const fx = e.visX + TILE / 2, fy = e.visY + TILE / 2;
+        this.projectile(fx, fy, wx, wy, 0xff5040);
+      }
       e.atkCd = 1.6;
     }
+
+    // ── Movement toward nearest target ────────────────────────────────────────
     const canMove = e.cc !== 'root';
-    if (visible && canMove && e.moveTimer <= 0 && !e.moving && dist <= detect && dist > melee) {
-      const sx = Math.sign(p.tileX - e.tileX), sy = Math.sign(p.tileY - e.tileY);
-      const tries = Math.abs(p.tileX - e.tileX) >= Math.abs(p.tileY - e.tileY)
+    if (targetVisible && canMove && e.moveTimer <= 0 && !e.moving && dist <= detect && dist > melee) {
+      const sx = Math.sign(tgtTx - e.tileX), sy = Math.sign(tgtTy - e.tileY);
+      const tries = Math.abs(tgtTx - e.tileX) >= Math.abs(tgtTy - e.tileY)
         ? [[sx, 0], [0, sy]] : [[0, sy], [sx, 0]];
       for (const [mx, my] of tries) if ((mx || my) && this.tryMove(e, mx, my, false)) break;
-      e.moveTimer = (e.cc === 'slow' ? 0.9 : 0.5);
+      e.moveTimer = e.cc === 'slow' ? 0.9 : 0.5;
     }
     const mt = e.kind === 'boss' ? 0.38 : 0.30;
     this.moveEntity(dt, e, mt, false);
