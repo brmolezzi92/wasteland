@@ -18,8 +18,10 @@ export interface C2S {
   // El jugador lanzó un hechizo. El server valida costo/cooldown y resuelve daño.
   cast: {
     spellId: string;
-    // objetivo: índice de enemigo, o coordenada de mundo para AoE, o userId para aliado
+    // objetivo: índice de enemigo, userId de otro jugador (PvP/duelo),
+    // coordenada de mundo para AoE, o userId para aliado
     enemyIdx?: number;
+    targetUserId?: string;
     wx?: number;
     wy?: number;
     allyUserId?: string;
@@ -94,6 +96,9 @@ export interface S2C {
   pong: { t: number };
   // El server fuerza un cambio de zona (p.ej. al morir, o entrar a duelo)
   forceZone: { zoneIdx: number; tx: number; ty: number };
+  // Estado de duelo/matchmaking para la UI
+  duel: { state: 'idle' | 'searching' | 'started' | 'ended';
+          opponent?: string; opponentId?: string; won?: boolean };
 }
 
 // ── Servidor → Consola (namespace /admin) ───────────────────────────────────

@@ -382,3 +382,14 @@
 }
 .hud-action-btn:hover { background: linear-gradient(180deg, #3a2010, #200e06); color: var(--text); }
 .hud-action-btn--exit:hover { border-color: var(--danger); color: var(--danger); }
+
+/* ── Duelo 1v1 ── */
+.duel-control { margin: 8px 0; display: flex; justify-content: center; }
+.duel-btn { font-size: 13px; padding: 8px 16px; letter-spacing: .5px; }
+.duel-status {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-radius: 6px; font-weight: 700; font-size: 13px;
+}
+.duel-status--searching { background: rgba(40,90,140,.25); border: 1px solid #2e5a8a; color: #88ddff; }
+.duel-status--active { background: rgba(140,50,20,.3); border: 1px solid #c8502a; color: #ff8844; letter-spacing: 1px; }
+.duel-cancel { padding: 2px 8px; font-size: 12px; margin-left: 4px; }

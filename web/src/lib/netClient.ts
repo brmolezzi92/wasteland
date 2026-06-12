@@ -2,7 +2,7 @@
 // Reemplaza el sistema peer-host basado en Supabase Realtime.
 import { io, type Socket } from 'socket.io-client';
 import type {
-  ZoneSnapshot, FxEvent, YouUpdate, JoinedMsg, NetPlayer, CastIntent,
+  ZoneSnapshot, FxEvent, YouUpdate, JoinedMsg, NetPlayer, CastIntent, DuelMsg,
 } from './protocol';
 
 // URL del servidor. En dev apunta a localhost; en prod/túnel se configura
@@ -18,6 +18,7 @@ export interface NetHandlers {
   onForceZone: (zoneIdx: number, tx: number, ty: number) => void;
   onConnChange: (connected: boolean) => void;
   onPing: (ms: number) => void;
+  onDuel: (m: DuelMsg) => void;
 }
 
 export class NetClient {
@@ -50,6 +51,7 @@ export class NetClient {
     s.on('log', (l: { msg: string; color: string }) => this.handlers.onLog(l.msg, l.color));
     s.on('forceZone', (m: { zoneIdx: number; tx: number; ty: number }) =>
       this.handlers.onForceZone(m.zoneIdx, m.tx, m.ty));
+    s.on('duel', (m: DuelMsg) => this.handlers.onDuel(m));
 
     // Ping: el server inicia, respondemos con el mismo timestamp.
     s.on('ping', (m: { t: number }) => {

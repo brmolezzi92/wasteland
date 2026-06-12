@@ -68,6 +68,7 @@ export default function Game() {
   const selectedChar   = useStore((s) => s.selectedChar);
   const profile        = useStore((s) => s.profile);
   const authUserId     = useStore((s) => s.authUserId);
+  const gameMode       = useStore((s) => s.gameMode);
   const selectedClass  = selectedChar?.class_id || 'baluarte';
 
   const hostRef        = useRef<HTMLDivElement>(null);
@@ -132,6 +133,8 @@ export default function Game() {
     const net = new NetClient({
       onJoined: (m) => {
         engine.applyServerYou({ hp: m.you.hp, energy: m.you.energy, inventory: m.inventory });
+        // Si entré buscando duelo 1v1, encolo apenas conecto.
+        if ((gameMode ?? '').startsWith('1v1')) engine.startMatchmake();
       },
       onSnapshot: (snap) => engine.applyServerSnapshot(snap as any),
       onFx: (fx) => engine.applyServerFx(fx),
@@ -145,6 +148,7 @@ export default function Game() {
         engine.addLog(connected ? '🟢 Conectado al servidor' : '🔴 Servidor desconectado',
           connected ? '#66e06a' : '#ff4444'),
       onPing: (ms) => { pingRef.current = ms; engine.ping = ms; },
+      onDuel: (m) => engine.applyDuel(m),
     });
     netRef.current = net;
 
@@ -160,6 +164,7 @@ export default function Game() {
         engine.onPickupIntent = (tx, ty) => net.pickup(tx, ty);
         engine.onUsePotion = (slot) => net.usePotion(slot);
         engine.onMatchmake = () => net.matchmake();
+        engine.onMatchmakeCancel = () => net.matchmakeCancel();
         // Reconstruir minimap al cambiar de zona localmente
         engine.onZoneChange = () => { tileCanvasRef.current = buildTileCanvas(engine.map); };
 
@@ -305,6 +310,22 @@ export default function Game() {
           {hud.isGhost    && <div className="status-banner ghost-banner">PROYECCIÓN CUÁNTICA · {Math.ceil(hud.ghostTimer)}s</div>}
           {hud.isInvisible && <div className="status-banner invis-banner">CAMUFLAJE ACTIVO</div>}
           {hud.cc         && <div className="status-banner cc-banner">{hud.cc.toUpperCase()} {hud.ccTimer.toFixed(1)}s</div>}
+
+          {/* ── DUELO 1v1 ── */}
+          <div className="duel-control">
+            {hud.duelState === 'idle' && (
+              <button className="btn btn--primary duel-btn" onClick={() => eng().startMatchmake()}>⚔ Buscar Duelo 1v1</button>
+            )}
+            {hud.duelState === 'searching' && (
+              <div className="duel-status duel-status--searching">
+                <span className="queue-dots"><i/><i/><i/></span> Buscando oponente…
+                <button className="btn btn--ghost duel-cancel" onClick={() => eng().cancelMatchmake()}>✕</button>
+              </div>
+            )}
+            {hud.duelState === 'in_duel' && (
+              <div className="duel-status duel-status--active">⚔ DUELO vs {hud.duelOpponent}</div>
+            )}
+          </div>
 
           {/* ── TABS ── */}
           <div className="hud-tabs">

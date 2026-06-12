@@ -99,7 +99,7 @@ export class World {
     this.net.emitToUser(userId, 'you', { hp: p.hp, energy: p.energy, inventory: p.inventory });
   }
 
-  handleCast(userId: string, msg: { spellId: string; enemyIdx?: number; wx?: number; wy?: number; allyUserId?: string }) {
+  handleCast(userId: string, msg: { spellId: string; enemyIdx?: number; targetUserId?: string; wx?: number; wy?: number; allyUserId?: string }) {
     const p = this.players.get(userId); if (!p || p.isGhost) return;
     const idx = p.spellIds.indexOf(msg.spellId);
     if (idx === -1) return;
@@ -126,10 +126,11 @@ export class World {
         this.net.emitToUser(userId, 'you', { hp: p.hp });
         this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'heal', wx: pcx, wy: pcy, amount: heal, color });
       } else {
-        // aoe_self / melee_area: daño alrededor del jugador
+        // aoe_self / melee_area: daño alrededor del jugador (enemigos + oponente de duelo)
         const r = sp.aoe_radius || 64;
         const dmg = calcSpellDamage(sp, p.baseDamage);
         const dead = z.damageRadius(pcx, pcy, r, dmg, cc, (sp.cc_duration || 1.5) * CC_AOE_MULT);
+        this.damageDuelOpponentsInRadius(p, pcx, pcy, r, dmg);
         this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'explosion', wx: pcx, wy: pcy, color, amount: r });
         for (const e of dead) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
       }
@@ -138,26 +139,52 @@ export class World {
       const dmg = calcSpellDamage(sp, p.baseDamage);
       const wx = msg.wx ?? pcx, wy = msg.wy ?? pcy;
       const dead = z.damageRadius(wx, wy, r, dmg, cc, (sp.cc_duration || 1.5) * CC_AOE_MULT);
+      this.damageDuelOpponentsInRadius(p, wx, wy, r, dmg);
       this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'explosion', wx, wy, color, amount: r });
       for (const e of dead) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
     } else if (mode === 'enemy') {
-      const e = msg.enemyIdx != null ? z.enemies[msg.enemyIdx] : null;
-      if (e && e.alive) {
-        const dmg = calcSpellDamage(sp, p.baseDamage);
-        const ewx = e.tx * TILE + TILE / 2, ewy = e.ty * TILE + TILE / 2;
-        const died = z.hitEnemy(e, dmg, cc, sp.cc_duration || 0);
-        if (sp.effect === 'projectile') {
-          this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'projectile', wx: pcx, wy: pcy, wx2: ewx, wy2: ewy, color });
+      // PvP: objetivo es otro jugador (solo válido contra el oponente del duelo)
+      if (msg.targetUserId) {
+        const foe = this.players.get(msg.targetUserId);
+        const sameduel = foe && p.inDuel && p.inDuel === foe.inDuel;
+        if (foe && sameduel && !foe.isGhost) {
+          const dmg = calcSpellDamage(sp, p.baseDamage);
+          const fwx = foe.tx * TILE + TILE / 2, fwy = foe.ty * TILE + TILE / 2;
+          if (sp.effect === 'projectile')
+            this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'projectile', wx: pcx, wy: pcy, wx2: fwx, wy2: fwy, color });
+          this.damagePlayer(foe.userId, dmg, fwx, fwy);
+          this.net.emitToUser(userId, 'log', { msg: `Golpeaste a ${foe.username} por ${dmg}.`, color: '#ffb43c' });
         }
-        this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'hit', wx: ewx, wy: ewy, amount: dmg, color: 0xff5050, text: `-${dmg}` });
-        this.net.emitToUser(userId, 'log', { msg: `Atacaste a ${e.name} por ${dmg}. HP: ${Math.round(e.hp)}/${e.maxHp}`, color: '#ffb43c' });
-        if (died) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
+      } else {
+        const e = msg.enemyIdx != null ? z.enemies[msg.enemyIdx] : null;
+        if (e && e.alive) {
+          const dmg = calcSpellDamage(sp, p.baseDamage);
+          const ewx = e.tx * TILE + TILE / 2, ewy = e.ty * TILE + TILE / 2;
+          const died = z.hitEnemy(e, dmg, cc, sp.cc_duration || 0);
+          if (sp.effect === 'projectile') {
+            this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'projectile', wx: pcx, wy: pcy, wx2: ewx, wy2: ewy, color });
+          }
+          this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'hit', wx: ewx, wy: ewy, amount: dmg, color: 0xff5050, text: `-${dmg}` });
+          this.net.emitToUser(userId, 'log', { msg: `Atacaste a ${e.name} por ${dmg}. HP: ${Math.round(e.hp)}/${e.maxHp}`, color: '#ffb43c' });
+          if (died) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
+        }
       }
     }
 
     p.energy -= cost;
     p.spellCd[idx] = sp.cooldown || 1.5;
     this.net.emitToUser(userId, 'you', { energy: p.energy });
+  }
+
+  // Daño AoE a oponentes de duelo dentro del radio (no toca jugadores neutrales).
+  private damageDuelOpponentsInRadius(attacker: Player, wx: number, wy: number, r: number, dmg: number) {
+    if (!attacker.inDuel) return;
+    for (const foe of this.playersInZone(attacker.zoneIdx)) {
+      if (foe === attacker || foe.isGhost) continue;
+      if (foe.inDuel !== attacker.inDuel) continue;
+      const fwx = foe.tx * TILE + TILE / 2, fwy = foe.ty * TILE + TILE / 2;
+      if (Math.hypot(fwx - wx, fwy - wy) <= r) this.damagePlayer(foe.userId, dmg, fwx, fwy);
+    }
   }
 
   // ── Tick principal ─────────────────────────────────────────────────────────

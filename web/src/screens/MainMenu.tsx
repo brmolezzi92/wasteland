@@ -160,8 +160,11 @@ export default function MainMenu() {
     if (!char) { setScreen('charselect'); return; }
     setSelectedChar(char);
 
-    const modeElo = activeMode === '1v1' ? (profile?.elo_1v1 ?? 1500)
-      : activeMode === '2v2' ? (profile?.elo_2v2 ?? 1500)
+    // 1v1 va por el servidor autoritativo: entrás al mundo y el server te
+    // empareja y teleporta a la arena. No usa la cola de Supabase.
+    if (activeMode === '1v1') { startGame('1v1'); return; }
+
+    const modeElo = activeMode === '2v2' ? (profile?.elo_2v2 ?? 1500)
       : (profile?.elo_4v4 ?? 1500);
 
     setQueueMode(activeMode); setQueueSec(0);

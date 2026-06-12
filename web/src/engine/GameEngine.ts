@@ -105,6 +105,7 @@ export interface HudState {
   logs: LogEntry[];
   fps: number; ping: number;
   zoneName: string; zoneIdx: number;
+  duelState: 'idle' | 'searching' | 'in_duel'; duelOpponent: string;
   minimap: {
     mapW: number; mapH: number;
     playerTx: number; playerTy: number;
@@ -163,11 +164,17 @@ export class GameEngine {
 
   // ── Intents hacia el servidor (los conecta Game.tsx con NetClient) ──────────
   onMove: ((tx: number, ty: number, facing: number, moving: boolean) => void) | null = null;
-  onCast: ((intent: { spellId: string; enemyIdx?: number; wx?: number; wy?: number }) => void) | null = null;
+  onCast: ((intent: { spellId: string; enemyIdx?: number; targetUserId?: string; wx?: number; wy?: number }) => void) | null = null;
   onZoneEnter: ((zoneIdx: number) => void) | null = null;
   onPickupIntent: ((tileX: number, tileY: number) => void) | null = null;
   onUsePotion: ((slot: number) => void) | null = null;
   onMatchmake: (() => void) | null = null;
+  onMatchmakeCancel: (() => void) | null = null;
+
+  // ── Estado de duelo/matchmaking (lo refleja el HUD) ─────────────────────────
+  duelState: 'idle' | 'searching' | 'in_duel' = 'idle';
+  duelOpponent = '';
+  duelOpponentId = '';
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -705,8 +712,14 @@ export class GameEngine {
     } else if (mode === 'ally') {
       this.floatText(wx, wy, 'Sin aliado caído', 0xc8c850); this.cancelCast();
     } else {
+      // PvP: si hay un jugador en el tile (oponente de duelo), apuntarlo.
+      const foeId = this.remotePlayerAtTile(tx, ty);
       const enemy = this.enemyAtTile(tx, ty);
-      if (enemy) {
+      if (foeId) {
+        this.castRemoteVisual(sp, foeId);
+        this.sendCast(idx, { targetUserId: foeId });
+        this.cancelCast();
+      } else if (enemy) {
         this.castEnemyVisual(sp, enemy);
         this.sendCast(idx, { enemyIdx: this.enemies.indexOf(enemy) });
         this.cancelCast();
@@ -715,11 +728,20 @@ export class GameEngine {
   }
 
   // Cooldown/energía optimistas para que el HUD responda ya; el server corrige.
-  private sendCast(idx: number, extra: { enemyIdx?: number; wx?: number; wy?: number }) {
+  private sendCast(idx: number, extra: { enemyIdx?: number; targetUserId?: string; wx?: number; wy?: number }) {
     const sp = SPELLS[this.player.spellIds[idx]];
     this.player.energy = Math.max(0, this.player.energy - (sp.energy_cost || 0));
     this.player.spellCd[idx] = sp.cooldown || 1.5;
     this.onCast?.({ spellId: this.player.spellIds[idx], ...extra });
+  }
+
+  // ── Duelo / matchmaking ─────────────────────────────────────────────────────
+  startMatchmake() { if (this.duelState === 'idle') { this.duelState = 'searching'; this.onMatchmake?.(); } }
+  cancelMatchmake() { if (this.duelState === 'searching') { this.duelState = 'idle'; this.onMatchmakeCancel?.(); } }
+  applyDuel(m: { state: 'idle' | 'searching' | 'started' | 'ended'; opponent?: string; opponentId?: string; won?: boolean }) {
+    if (m.state === 'searching') this.duelState = 'searching';
+    else if (m.state === 'started') { this.duelState = 'in_duel'; this.duelOpponent = m.opponent ?? '?'; this.duelOpponentId = m.opponentId ?? ''; }
+    else { this.duelState = 'idle'; this.duelOpponent = ''; this.duelOpponentId = ''; }
   }
 
   castInstant(idx: number) {
@@ -794,6 +816,24 @@ export class GameEngine {
   enemyAtTile(tx: number, ty: number): Entity | null {
     for (const e of this.enemies) if (e.alive && e.tileX === tx && e.tileY === ty) return e;
     return null;
+  }
+
+  // Devuelve el userId de un jugador remoto parado en el tile (para PvP).
+  remotePlayerAtTile(tx: number, ty: number): string | null {
+    for (const [uid, rp] of this.remotePlayers) {
+      if (Math.round(rp.tgtX / TILE) === tx && Math.round(rp.tgtY / TILE) === ty) return uid;
+    }
+    return null;
+  }
+
+  // Solo visual: proyectil/explosión sobre un jugador remoto.
+  castRemoteVisual(sp: any, userId: string) {
+    const rp = this.remotePlayers.get(userId); if (!rp) return;
+    const c = col(sp.color || [200, 200, 200]);
+    const tx = rp.tgtX + TILE / 2, ty = rp.tgtY + TILE / 2;
+    const pcx = this.player.visX + TILE / 2, pcy = this.player.visY + TILE / 2;
+    if (sp.effect === 'projectile') this.projectile(pcx, pcy, tx, ty, c);
+    else this.explosion(tx, ty, c, 44);
   }
 
   // ── Aplicación de estado autoritativo del servidor ─────────────────────────
@@ -1193,6 +1233,7 @@ export class GameEngine {
       fps: Math.round(this.fps), ping: Math.round(this.ping),
       minimap: { mapW: ZONE_W, mapH: ZONE_H, playerTx: p.tileX, playerTy: p.tileY, dots },
       zoneName: ZONE_NAMES[this.currentZone], zoneIdx: this.currentZone,
+      duelState: this.duelState, duelOpponent: this.duelOpponent,
     };
   }
 

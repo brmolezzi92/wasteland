@@ -26,12 +26,16 @@ export class DuelManager {
     if (!p || p.inDuel) return;
     if (this.queue.includes(userId)) return;
     this.queue.push(userId);
+    this.net.emitToUser(userId, 'duel', { state: 'searching' });
     this.net.emitToUser(userId, 'log', { msg: '🔍 Buscando oponente 1v1…', color: '#88ddff' });
     this.tryMatch();
   }
 
   dequeue(userId: string) {
+    if (!this.queue.includes(userId)) return;
     this.queue = this.queue.filter(id => id !== userId);
+    this.net.emitToUser(userId, 'duel', { state: 'idle' });
+    this.net.emitToUser(userId, 'log', { msg: 'Búsqueda de duelo cancelada.', color: '#8a7a60' });
   }
 
   private tryMatch() {
@@ -57,6 +61,8 @@ export class DuelManager {
 
     for (const [me, foe] of [[a, b], [b, a]] as const) {
       this.net.emitToUser(me.userId, 'forceZone', { zoneIdx: DUEL_ARENA_ZONE, tx: me.tx, ty: me.ty });
+      this.net.emitToUser(me.userId, 'you', { hp: me.hp, energy: me.energy, isGhost: false });
+      this.net.emitToUser(me.userId, 'duel', { state: 'started', opponentId: foe.userId, opponent: foe.username });
       this.net.emitToUser(me.userId, 'log', { msg: `⚔ Duelo vs ${foe.username}. ¡A pelear!`, color: '#ff8844' });
     }
   }
@@ -78,7 +84,18 @@ export class DuelManager {
     winner.inDuel = null; loser.inDuel = null;
     this.net.emitToUser(winner.userId, 'log', { msg: `🏆 Ganaste el duelo vs ${loser.username}!`, color: '#66e06a' });
     this.net.emitToUser(loser.userId, 'log', { msg: `💀 Perdiste el duelo vs ${winner.username}.`, color: '#ff4444' });
+    this.net.emitToUser(winner.userId, 'duel', { state: 'ended', won: true });
+    this.net.emitToUser(loser.userId, 'duel', { state: 'ended', won: false });
     void saveEloResult(winner.userId, loser.userId);
+    // Revivir a ambos y devolverlos a la base (zona 0).
+    for (const pl of [winner, loser]) {
+      pl.isGhost = false; pl.ghostTimer = 0;
+      pl.hp = pl.maxHp; pl.energy = pl.maxEnergy;
+      pl.cc = null; pl.ccTimer = 0; pl.shield = 0;
+      pl.zoneIdx = 0; pl.tx = 50; pl.ty = 70;
+      this.net.emitToUser(pl.userId, 'forceZone', { zoneIdx: 0, tx: pl.tx, ty: pl.ty });
+      this.net.emitToUser(pl.userId, 'you', { hp: pl.hp, energy: pl.energy, isGhost: false });
+    }
   }
 
   // Si un jugador se desconecta, su oponente gana por abandono.

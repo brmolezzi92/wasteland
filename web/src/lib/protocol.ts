@@ -60,7 +60,15 @@ export interface JoinedMsg {
 export interface CastIntent {
   spellId: string;
   enemyIdx?: number;
+  targetUserId?: string;
   wx?: number;
   wy?: number;
   allyUserId?: string;
+}
+
+export interface DuelMsg {
+  state: 'idle' | 'searching' | 'started' | 'ended';
+  opponent?: string;
+  opponentId?: string;
+  won?: boolean;
 }
