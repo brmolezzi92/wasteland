@@ -8,6 +8,7 @@ import pc from 'picocolors';
 import { CONFIG, TICK_MS, SNAPSHOT_MS, ADMIN_MS } from './config.js';
 import { World, type WorldNet } from './world/World.js';
 import { DuelManager } from './world/Duels.js';
+import { PartyManager } from './world/Parties.js';
 import { setupGameNamespace } from './net/gameNamespace.js';
 import { setupAdminNamespace, getSpectators } from './net/adminNamespace.js';
 import { buildMetrics } from './admin/metrics.js';
@@ -34,7 +35,10 @@ app.get('*', (req, res, next) => {
 });
 
 const http = createServer(app);
-const io = new Server(http, { cors: { origin: '*' } });
+// pingTimeout alto: una pestaña en segundo plano (alt-tab) congela los timers
+// del navegador; con esto no se la considera caída tan rápido. Si igual se
+// corta, la reconexión retoma el estado (ver gameNamespace).
+const io = new Server(http, { cors: { origin: '*' }, pingInterval: 25_000, pingTimeout: 60_000 });
 
 const gameNs = io.of('/game');
 const adminNs = io.of('/admin');
@@ -52,9 +56,11 @@ const net: WorldNet = {
 
 const world = new World(net);
 const duels = new DuelManager(world, net);
+const parties = new PartyManager(world, net);
 world.onPlayerDeath = (uid) => duels.reportDeath(uid);
+world.coMembers = (uid) => parties.coMembers(uid);
 
-setupGameNamespace(gameNs, world, duels);
+setupGameNamespace(gameNs, world, duels, parties);
 setupAdminNamespace(adminNs, world);
 
 // ── Bucles del servidor ──────────────────────────────────────────────────────

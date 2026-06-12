@@ -103,9 +103,11 @@ export interface HudState {
   isGhost: boolean; ghostTimer: number; cc: CC; ccTimer: number;
   isInvisible: boolean;
   logs: LogEntry[];
-  fps: number; ping: number; connected: boolean;
+  fps: number; ping: number; connected: boolean; netDown: number; netUp: number;
   zoneName: string; zoneIdx: number;
   duelState: 'idle' | 'searching' | 'in_duel'; duelOpponent: string;
+  party: { userId: string; username: string; hp: number; maxHp: number; leader: boolean }[];
+  isPartyLeader: boolean; partyTargeting: boolean;
   minimap: {
     mapW: number; mapH: number;
     playerTx: number; playerTy: number;
@@ -161,11 +163,12 @@ export class GameEngine {
   remotePlayers = new Map<string, RemotePEntry>();
   fps = 0; ping = 0;
   connected = false;
+  netDown = 0; netUp = 0;        // KB/s entrante / saliente
   myUserId = '';
 
   // ── Intents hacia el servidor (los conecta Game.tsx con NetClient) ──────────
   onMove: ((tx: number, ty: number, facing: number, moving: boolean) => void) | null = null;
-  onCast: ((intent: { spellId: string; enemyIdx?: number; targetUserId?: string; wx?: number; wy?: number }) => void) | null = null;
+  onCast: ((intent: { spellId: string; enemyIdx?: number; targetUserId?: string; allyUserId?: string; wx?: number; wy?: number }) => void) | null = null;
   onZoneEnter: ((zoneIdx: number) => void) | null = null;
   onPickupIntent: ((tileX: number, tileY: number) => void) | null = null;
   onUsePotion: ((slot: number) => void) | null = null;
@@ -176,6 +179,15 @@ export class GameEngine {
   duelState: 'idle' | 'searching' | 'in_duel' = 'idle';
   duelOpponent = '';
   duelOpponentId = '';
+
+  // ── Party (grupo) ───────────────────────────────────────────────────────────
+  party = new Set<string>();                 // userIds de los OTROS miembros
+  partyLeaderId = '';                         // userId del líder ('' = sin party)
+  partyNames = new Map<string, string>();     // userId → username (para el panel)
+  partyTargeting = false;                     // modo "clic para invitar" activo
+  onPartyInvite: ((targetUserId: string) => void) | null = null;
+  onPartyKick: ((targetUserId: string) => void) | null = null;
+  onPartyLeave: (() => void) | null = null;
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -512,7 +524,18 @@ export class GameEngine {
     const rect = this.app.canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
     const wx = sx + this.camX, wy = sy + this.camY;
-    if (e.button === 2) { this.cancelCast(); return; }
+    if (e.button === 2) { this.partyTargeting = false; this.cancelCast(); return; }
+
+    // Modo "invitar a party": el clic sobre un jugador lo invita.
+    if (this.partyTargeting) {
+      const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+      const uid = this.remotePlayerAtTile(tx, ty);
+      this.partyTargeting = false;
+      document.body.style.cursor = 'default';
+      if (uid) { this.onPartyInvite?.(uid); this.floatText(wx, wy, '✉ Invitación enviada', 0x66e0c0); }
+      else this.floatText(wx, wy, 'Sin jugador ahí', 0xc8c850);
+      return;
+    }
 
     // Sin hechizo cargado: inspect entidad
     if (this.pending === null) {
@@ -567,8 +590,9 @@ export class GameEngine {
 
   targetMode(sp: any): 'instant' | 'ground' | 'enemy' | 'ally' {
     const dt = sp.damage_type;
-    if (['self', 'aoe_self', 'melee_area', 'aoe_heal', 'single_target_heal'].includes(dt)) return 'instant';
-    if (dt === 'resurrect') return 'ally';   // revivir = single target (clic en aliado caído)
+    if (['self', 'aoe_self', 'melee_area', 'aoe_heal'].includes(dt)) return 'instant';
+    // Curación single-target y resurrección: clic en un aliado (o en vos mismo).
+    if (dt === 'resurrect' || dt === 'single_target_heal') return 'ally';
     if (dt === 'aoe_targeted') return 'ground';
     return 'enemy';
   }
@@ -711,7 +735,20 @@ export class GameEngine {
       this.sendCast(idx, { wx, wy });
       this.cancelCast();
     } else if (mode === 'ally') {
-      this.floatText(wx, wy, 'Sin aliado caído', 0xc8c850); this.cancelCast();
+      // Curación/resurrección: clic en un compañero de party, o en vos mismo.
+      const allyId = this.partyMemberAtTile(tx, ty);
+      const onSelf = tx === this.player.tileX && ty === this.player.tileY;
+      if (allyId) {
+        const rp = this.remotePlayers.get(allyId);
+        if (rp) this.explosion(rp.tgtX + TILE / 2, rp.tgtY + TILE / 2, col(sp.color || [120, 220, 180]), 60);
+        this.sendCast(idx, { allyUserId: allyId });
+        this.cancelCast();
+      } else if (onSelf) {
+        const pcx = this.player.visX + TILE / 2, pcy = this.player.visY + TILE / 2;
+        this.explosion(pcx, pcy, col(sp.color || [120, 220, 180]), 60);
+        this.sendCast(idx, {});   // sin allyUserId → el server cura a uno mismo
+        this.cancelCast();
+      } else { this.floatText(wx, wy, 'Sin aliado ahí', 0xc8c850); this.cancelCast(); }
     } else {
       // PvP: si hay un jugador en el tile (oponente de duelo), apuntarlo.
       const foeId = this.remotePlayerAtTile(tx, ty);
@@ -729,7 +766,7 @@ export class GameEngine {
   }
 
   // Cooldown/energía optimistas para que el HUD responda ya; el server corrige.
-  private sendCast(idx: number, extra: { enemyIdx?: number; targetUserId?: string; wx?: number; wy?: number }) {
+  private sendCast(idx: number, extra: { enemyIdx?: number; targetUserId?: string; allyUserId?: string; wx?: number; wy?: number }) {
     const sp = SPELLS[this.player.spellIds[idx]];
     this.player.energy = Math.max(0, this.player.energy - (sp.energy_cost || 0));
     this.player.spellCd[idx] = sp.cooldown || 1.5;
@@ -825,6 +862,12 @@ export class GameEngine {
       if (Math.round(rp.tgtX / TILE) === tx && Math.round(rp.tgtY / TILE) === ty) return uid;
     }
     return null;
+  }
+
+  // Compañero de party parado en el tile (para curaciones de aliado).
+  partyMemberAtTile(tx: number, ty: number): string | null {
+    const uid = this.remotePlayerAtTile(tx, ty);
+    return uid && this.party.has(uid) ? uid : null;
   }
 
   // Solo visual: proyectil/explosión sobre un jugador remoto.
@@ -1063,22 +1106,24 @@ export class GameEngine {
     const g = this.overlayG; g.clear();
     if (this.pending == null) return;
     const sp = SPELLS[this.player.spellIds[this.pending]] as any;
-    const c = col(sp.color || [230, 160, 40]);
     const mode = this.targetMode(sp);
     const tx = Math.floor(this.mouseWX / TILE), ty = Math.floor(this.mouseWY / TILE);
 
-    // Highlight del tile objetivo (solo single-target: el hitbox es el tile)
+    // Highlight del tile objetivo (single-target: el hitbox es el tile)
     if (mode === 'enemy') {
-      const target = this.enemyAtTile(tx, ty);
-      const valid = !!target;
+      const valid = !!this.enemyAtTile(tx, ty) || !!this.remotePlayerAtTile(tx, ty);
       const hc = valid ? 0x66e06a : 0xc85a4a;   // verde válido / rojo inválido
       g.rect(tx * TILE + 2, ty * TILE + 2, TILE - 4, TILE - 4)
         .fill({ color: hc, alpha: valid ? 0.22 : 0.10 })
         .stroke({ width: 2, color: hc, alpha: valid ? 0.9 : 0.4 });
+    } else if (mode === 'ally') {
+      // Curación a aliado: resaltar compañero de party bajo el cursor
+      const valid = !!this.partyMemberAtTile(tx, ty);
+      const hc = valid ? 0x66e0c0 : 0xc85a4a;
+      g.rect(tx * TILE + 2, ty * TILE + 2, TILE - 4, TILE - 4)
+        .fill({ color: hc, alpha: valid ? 0.24 : 0.10 })
+        .stroke({ width: 2, color: hc, alpha: valid ? 0.9 : 0.4 });
     }
-    // Cursor "cargado": anillo del color de la habilidad
-    g.circle(this.mouseWX, this.mouseWY, 11).stroke({ width: 2, color: c, alpha: 0.9 });
-    g.circle(this.mouseWX, this.mouseWY, 4).fill({ color: c, alpha: 0.9 });
   }
 
   // ── preview de área rasterizada a tiles ("círculo con bordes cuadrados") ────
@@ -1232,10 +1277,47 @@ export class GameEngine {
       isInvisible: p.isInvisible,
       logs: this.logs.slice(-8),
       fps: Math.round(this.fps), ping: Math.round(this.ping), connected: this.connected,
+      netDown: this.netDown, netUp: this.netUp,
       minimap: { mapW: ZONE_W, mapH: ZONE_H, playerTx: p.tileX, playerTy: p.tileY, dots },
       zoneName: ZONE_NAMES[this.currentZone], zoneIdx: this.currentZone,
       duelState: this.duelState, duelOpponent: this.duelOpponent,
+      party: this.getPartyHud(),
+      isPartyLeader: this.partyLeaderId !== '' && this.partyLeaderId === this.myUserId,
+      partyTargeting: this.partyTargeting,
     };
+  }
+
+  // Info de party para el HUD: cada miembro (otros) + yo, con hp del snapshot.
+  private getPartyHud(): { userId: string; username: string; hp: number; maxHp: number; leader: boolean }[] {
+    if (this.partyLeaderId === '') return [];
+    const out: { userId: string; username: string; hp: number; maxHp: number; leader: boolean }[] = [];
+    out.push({ userId: this.myUserId, username: 'Vos', hp: Math.round(this.player.hp), maxHp: this.player.maxHp, leader: this.partyLeaderId === this.myUserId });
+    for (const uid of this.party) {
+      const rp = this.remotePlayers.get(uid);
+      out.push({
+        userId: uid,
+        username: this.partyNames.get(uid) ?? rp?.nameLabel.text ?? '?',
+        hp: rp ? Math.round(rp.hp) : 0, maxHp: rp ? rp.maxHp : 1,
+        leader: this.partyLeaderId === uid,
+      });
+    }
+    return out;
+  }
+
+  // ── Party: aplicación de estado desde el servidor ──────────────────────────
+  applyParty(m: { leaderId: string; members: { userId: string; username: string }[] }) {
+    this.partyLeaderId = m.leaderId;
+    this.party.clear(); this.partyNames.clear();
+    for (const mem of m.members) {
+      this.partyNames.set(mem.userId, mem.username);
+      if (mem.userId !== this.myUserId) this.party.add(mem.userId);
+    }
+  }
+  // Activar/desactivar el modo "clic para invitar".
+  togglePartyTargeting() {
+    this.partyTargeting = !this.partyTargeting;
+    this.pending = null;
+    document.body.style.cursor = this.partyTargeting ? 'crosshair' : 'default';
   }
 
   resize() {

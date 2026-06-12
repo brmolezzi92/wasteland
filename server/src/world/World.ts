@@ -12,8 +12,8 @@ export interface WorldNet {
 }
 
 function targetMode(dt: string): 'instant' | 'ground' | 'enemy' | 'ally' {
-  if (['self', 'aoe_self', 'melee_area', 'aoe_heal', 'single_target_heal'].includes(dt)) return 'instant';
-  if (dt === 'resurrect') return 'ally';
+  if (['self', 'aoe_self', 'melee_area', 'aoe_heal'].includes(dt)) return 'instant';
+  if (dt === 'resurrect' || dt === 'single_target_heal') return 'ally';
   if (dt === 'aoe_targeted') return 'ground';
   return 'enemy';
 }
@@ -24,6 +24,8 @@ export class World {
   bySocket = new Map<string, string>();     // socketId → userId
   serverTick = 0;
   onPlayerDeath: ((userId: string) => void) | null = null;
+  // Resuelve compañeros de party (lo setea index.ts con el PartyManager).
+  coMembers: ((userId: string) => string[]) | null = null;
 
   constructor(private net: WorldNet) {}
 
@@ -53,6 +55,14 @@ export class World {
     if (!userId) return;
     this.bySocket.delete(socketId);
     this.players.delete(userId);
+  }
+
+  // Reconexión: el mismo jugador vuelve con un socket nuevo. Conserva su estado
+  // (posición, hp, zona, inventario) — no se crea un jugador nuevo.
+  rebindSocket(p: Player, newSocketId: string) {
+    this.bySocket.delete(p.socketId);
+    p.socketId = newSocketId;
+    this.bySocket.set(newSocketId, p.userId);
   }
 
   getByUser(userId: string) { return this.players.get(userId); }
@@ -119,12 +129,20 @@ export class World {
         if (sp.invisible_duration) { p.isInvisible = true; p.invisTimer = sp.invisible_duration; }
         if (sp.cleanse) { p.cc = null; p.ccTimer = 0; }
         this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'explosion', wx: pcx, wy: pcy, color, amount: sp.aoe_radius || 64 });
-      } else if (sp.damage_type === 'aoe_heal' || sp.damage_type === 'single_target_heal') {
-        let heal = sp.heal_base || 0;
-        if (sp.damage_type === 'aoe_heal') heal = Math.round(heal * (sp.heal_multiplier || 0.55));
-        p.hp = Math.min(p.maxHp, p.hp + heal);
-        this.net.emitToUser(userId, 'you', { hp: p.hp });
-        this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'heal', wx: pcx, wy: pcy, amount: heal, color });
+      } else if (sp.damage_type === 'aoe_heal') {
+        // Cura a uno mismo + compañeros de party en el radio.
+        const heal = Math.round((sp.heal_base || 0) * (sp.heal_multiplier || 0.55));
+        const r = sp.aoe_radius || 140;
+        this.healPlayer(p, heal);
+        const mates = this.coMembers ? this.coMembers(userId) : [userId];
+        for (const mid of mates) {
+          if (mid === userId) continue;
+          const m = this.players.get(mid);
+          if (!m || m.zoneIdx !== p.zoneIdx || m.isGhost) continue;
+          const mwx = m.tx * TILE + TILE / 2, mwy = m.ty * TILE + TILE / 2;
+          if (Math.hypot(mwx - pcx, mwy - pcy) <= r) this.healPlayer(m, heal);
+        }
+        this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'explosion', wx: pcx, wy: pcy, color, amount: r });
       } else {
         // aoe_self / melee_area: daño alrededor del jugador (enemigos + oponente de duelo)
         const r = sp.aoe_radius || 64;
@@ -169,11 +187,44 @@ export class World {
           if (died) this.net.emitToUser(userId, 'log', { msg: `${e.name} fue eliminado.`, color: '#ff4444' });
         }
       }
+    } else if (mode === 'ally') {
+      // Curación single-target o resurrección sobre un aliado de party (o sobre uno mismo).
+      const mates = this.coMembers ? this.coMembers(userId) : [userId];
+      const targetId = msg.allyUserId && mates.includes(msg.allyUserId) ? msg.allyUserId : userId;
+      const target = this.players.get(targetId);
+      if (target && target.zoneIdx === p.zoneIdx) {
+        const twx = target.tx * TILE + TILE / 2, twy = target.ty * TILE + TILE / 2;
+        if (sp.damage_type === 'resurrect') {
+          if (target.isGhost) {
+            target.isGhost = false; target.ghostTimer = 0;
+            target.hp = Math.round(target.maxHp * 0.4);
+            this.net.emitToUser(targetId, 'forceZone', { zoneIdx: target.zoneIdx, tx: target.tx, ty: target.ty });
+            this.net.emitToUser(targetId, 'you', { hp: target.hp, isGhost: false });
+            this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'heal', wx: twx, wy: twy, amount: target.hp, color });
+            this.net.emitToUser(userId, 'log', { msg: `Reviviste a ${target.username}.`, color: '#66e0c0' });
+          } else {
+            this.net.emitToUser(userId, 'log', { msg: `${target.username} no está caído.`, color: '#c8a050' });
+          }
+        } else {
+          const heal = sp.heal_base || 0;
+          this.healPlayer(target, heal);
+          this.net.emitToZone(p.zoneIdx, 'fx', { kind: 'heal', wx: twx, wy: twy, amount: heal, color });
+          const who = targetId === userId ? 'te' : `a ${target.username}`;
+          this.net.emitToUser(userId, 'log', { msg: `Curaste ${who} por ${heal}.`, color: '#66e0c0' });
+        }
+      }
     }
 
     p.energy -= cost;
     p.spellCd[idx] = sp.cooldown || 1.5;
     this.net.emitToUser(userId, 'you', { energy: p.energy });
+  }
+
+  // Cura a un jugador y le notifica su HP autoritativo.
+  private healPlayer(target: Player, heal: number) {
+    if (heal <= 0 || target.isGhost) return;
+    target.hp = Math.min(target.maxHp, target.hp + heal);
+    this.net.emitToUser(target.userId, 'you', { hp: target.hp });
   }
 
   // Daño AoE a oponentes de duelo dentro del radio (no toca jugadores neutrales).

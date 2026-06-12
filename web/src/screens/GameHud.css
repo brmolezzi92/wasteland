@@ -393,3 +393,32 @@
 .duel-status--searching { background: rgba(40,90,140,.25); border: 1px solid #2e5a8a; color: #88ddff; }
 .duel-status--active { background: rgba(140,50,20,.3); border: 1px solid #c8502a; color: #ff8844; letter-spacing: 1px; }
 .duel-cancel { padding: 2px 8px; font-size: 12px; margin-left: 4px; }
+
+/* ── Throughput de datos ── */
+.perf-net { color: #9ab0c8; }
+
+/* ── Party ── */
+.party-control { margin: 8px 0; }
+.party-btn { width: 100%; font-size: 13px; padding: 8px 12px; }
+.party-panel { background: rgba(20,30,28,.6); border: 1px solid #2e5a4a; border-radius: 8px; padding: 8px 10px; }
+.party-panel__head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 700; color: #66e0c0; letter-spacing: 1px; margin-bottom: 6px; }
+.party-panel__actions { display: flex; gap: 4px; }
+.party-mini { padding: 1px 7px; font-size: 13px; line-height: 1.3; }
+.party-mini.on { border-color: #66e0c0; color: #66e0c0; }
+.party-member { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; }
+.party-member__name { flex: 0 0 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d8ecdf; }
+.party-hp { flex: 1; height: 7px; background: #221a10; border-radius: 4px; overflow: hidden; }
+.party-hp__fill { height: 100%; background: linear-gradient(90deg,#3a8f5a,#66e06a); transition: width .2s; }
+.party-member__hp { flex: 0 0 30px; text-align: right; color: #9ad0a8; }
+.party-kick { background: none; border: none; color: #c86a5a; cursor: pointer; font-size: 12px; padding: 0 2px; }
+.party-kick:hover { color: #ff5050; }
+.party-hint { font-size: 11px; color: #88b0a0; margin-top: 5px; font-style: italic; }
+
+/* ── Invitación a party (modal flotante) ── */
+.party-invite {
+  position: absolute; top: 70px; left: 50%; transform: translateX(-50%);
+  background: rgba(16,28,24,.96); border: 1px solid #2e5a4a; border-radius: 10px;
+  padding: 14px 18px; z-index: 60; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+}
+.party-invite__text { color: #e8f4ec; font-size: 14px; margin-bottom: 10px; }
+.party-invite__btns { display: flex; gap: 8px; justify-content: center; }

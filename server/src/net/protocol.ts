@@ -99,6 +99,10 @@ export interface S2C {
   // Estado de duelo/matchmaking para la UI
   duel: { state: 'idle' | 'searching' | 'started' | 'ended';
           opponent?: string; opponentId?: string; won?: boolean };
+  // Estado de party: líder + miembros (vacío = sin party)
+  party: { leaderId: string; members: { userId: string; username: string }[] };
+  // Invitación entrante a party (el destinatario muestra aceptar/rechazar)
+  party_invited: { fromUserId: string; fromUsername: string };
 }
 
 // ── Servidor → Consola (namespace /admin) ───────────────────────────────────

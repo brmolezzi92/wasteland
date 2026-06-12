@@ -39,6 +39,7 @@ export class Player {
   ping = 0;
   connectedAt = Date.now();
   inDuel: string | null = null;
+  partyId: string | null = null;
 
   constructor(p: { userId: string; username: string; classId: string; charId: string; socketId: string }) {
     this.userId = p.userId;

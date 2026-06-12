@@ -77,6 +77,7 @@ export default function Game() {
   const [hud, setHud]  = useState<HudState | null>(null);
   const [err, setErr]  = useState<string | null>(null);
   const [tab, setTab]  = useState<'spells' | 'inv'>('spells');
+  const [partyInvite, setPartyInvite] = useState<{ fromUserId: string; fromUsername: string } | null>(null);
   const lastClick      = useRef<{ slot: number; t: number }>({ slot: -1, t: 0 });
   const tileCanvasRef  = useRef<HTMLCanvasElement | null>(null);
   const fpsRef         = useRef<number[]>([]);
@@ -152,6 +153,8 @@ export default function Game() {
       },
       onPing: (ms) => { pingRef.current = ms; engine.ping = ms; },
       onDuel: (m) => engine.applyDuel(m),
+      onParty: (m) => engine.applyParty(m),
+      onPartyInvited: (m) => setPartyInvite(m),
     });
     netRef.current = net;
 
@@ -168,6 +171,9 @@ export default function Game() {
         engine.onUsePotion = (slot) => net.usePotion(slot);
         engine.onMatchmake = () => net.matchmake();
         engine.onMatchmakeCancel = () => net.matchmakeCancel();
+        engine.onPartyInvite = (targetUserId) => net.partyInvite(targetUserId);
+        engine.onPartyKick = (targetUserId) => net.partyKick(targetUserId);
+        engine.onPartyLeave = () => net.partyLeave();
         // Reconstruir minimap al cambiar de zona localmente
         engine.onZoneChange = () => { tileCanvasRef.current = buildTileCanvas(engine.map); };
 
@@ -179,7 +185,7 @@ export default function Game() {
           charId: selectedChar?.id ?? '',
         });
 
-        let last = 0;
+        let last = 0, netT = 0, lastDown = 0, lastUp = 0;
         const loop = (t: number) => {
           if (!alive) return;
           const dt = (t - lastFrameRef.current) / 1000;
@@ -188,6 +194,13 @@ export default function Game() {
             fpsRef.current.push(1 / dt);
             if (fpsRef.current.length > 30) fpsRef.current.shift();
             engine.fps = fpsRef.current.reduce((a, b) => a + b, 0) / fpsRef.current.length;
+          }
+          // Throughput (KB/s) calculado cada 1s a partir de los bytes acumulados.
+          if (t - netT >= 1000) {
+            const secs = (t - netT) / 1000;
+            engine.netDown = Math.round((net.bytesDown - lastDown) / 1024 / secs * 10) / 10;
+            engine.netUp = Math.round((net.bytesUp - lastUp) / 1024 / secs * 10) / 10;
+            lastDown = net.bytesDown; lastUp = net.bytesUp; netT = t;
           }
           if (t - last > 33) { setHud({ ...engine.getHud() }); last = t; }
           raf = requestAnimationFrame(loop);
@@ -225,14 +238,27 @@ export default function Game() {
 
       {err && <pre className="game__error">INIT ERROR: {err}</pre>}
 
-      {/* ── FPS / PING / CONEXIÓN overlay ── */}
+      {/* ── FPS / PING / CONEXIÓN / DATOS overlay ── */}
       {hud && (
         <div className="game__perf">
-          <span className={hud.connected ? 'perf-ok' : 'perf-bad'}>{hud.connected ? '🟢 online' : '🔴 sin server'}</span>
+          <span className={hud.connected ? 'perf-ok' : 'perf-bad'}>{hud.connected ? '🟢' : '🔴'}</span>
           <span className="perf-sep">·</span>
           <span className={hud.fps >= 55 ? 'perf-ok' : hud.fps >= 30 ? 'perf-warn' : 'perf-bad'}>{hud.fps} FPS</span>
           <span className="perf-sep">·</span>
           <span className={!hud.connected ? 'perf-bad' : hud.ping < 100 ? 'perf-ok' : hud.ping < 200 ? 'perf-warn' : 'perf-bad'}>{hud.connected ? `${hud.ping} ms` : '—'}</span>
+          <span className="perf-sep">·</span>
+          <span className="perf-net" title="datos recibidos / enviados">▼ {hud.netDown} <span className="perf-sep">/</span> ▲ {hud.netUp} KB/s</span>
+        </div>
+      )}
+
+      {/* ── INVITACIÓN A PARTY ── */}
+      {partyInvite && (
+        <div className="party-invite">
+          <div className="party-invite__text"><b>{partyInvite.fromUsername}</b> te invitó a su grupo</div>
+          <div className="party-invite__btns">
+            <button className="btn btn--primary" onClick={() => { netRef.current?.partyAccept(); setPartyInvite(null); }}>Aceptar</button>
+            <button className="btn btn--ghost" onClick={() => { netRef.current?.partyDecline(); setPartyInvite(null); }}>Rechazar</button>
+          </div>
         </div>
       )}
 
@@ -329,6 +355,42 @@ export default function Game() {
             )}
             {hud.duelState === 'in_duel' && (
               <div className="duel-status duel-status--active">⚔ DUELO vs {hud.duelOpponent}</div>
+            )}
+          </div>
+
+          {/* ── PARTY ── */}
+          <div className="party-control">
+            {hud.party.length === 0 ? (
+              <button
+                className={`btn ${hud.partyTargeting ? 'btn--ghost' : 'btn--primary'} party-btn`}
+                onClick={() => eng().togglePartyTargeting()}
+              >
+                {hud.partyTargeting ? '✖ Cancelá y clic en un jugador' : '👥 Party — invitar'}
+              </button>
+            ) : (
+              <div className="party-panel">
+                <div className="party-panel__head">
+                  <span>👥 GRUPO ({hud.party.length})</span>
+                  <div className="party-panel__actions">
+                    {hud.isPartyLeader && (
+                      <button className={`btn btn--ghost party-mini ${hud.partyTargeting ? 'on' : ''}`}
+                        onClick={() => eng().togglePartyTargeting()} title="Invitar a otro jugador">＋</button>
+                    )}
+                    <button className="btn btn--ghost party-mini" onClick={() => eng().onPartyLeave?.()} title="Salir del grupo">⤬</button>
+                  </div>
+                </div>
+                {hud.party.map(m => (
+                  <div key={m.userId} className="party-member">
+                    <span className="party-member__name">{m.leader ? '★ ' : ''}{m.username}</span>
+                    <div className="party-hp"><div className="party-hp__fill" style={{ width: `${Math.max(0, m.hp / m.maxHp * 100)}%` }} /></div>
+                    <span className="party-member__hp">{m.hp}</span>
+                    {hud.isPartyLeader && !m.leader && (
+                      <button className="party-kick" onClick={() => eng().onPartyKick?.(m.userId)} title="Expulsar">✕</button>
+                    )}
+                  </div>
+                ))}
+                {hud.partyTargeting && <div className="party-hint">Clic en un jugador del mundo para invitarlo…</div>}
+              </div>
             )}
           </div>
 

@@ -50,6 +50,8 @@ export interface NetHandlers {
   onConnChange: (connected: boolean) => void;
   onPing: (ms: number) => void;
   onDuel: (m: DuelMsg) => void;
+  onParty: (m: { leaderId: string; members: { userId: string; username: string }[] }) => void;
+  onPartyInvited: (m: { fromUserId: string; fromUsername: string }) => void;
 }
 
 export class NetClient {
@@ -62,7 +64,9 @@ export class NetClient {
   }
 
   serverUrl = '';
+  bytesUp = 0; bytesDown = 0;     // acumuladores de tráfico (aprox, por JSON)
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private approx(x: unknown): number { try { return JSON.stringify(x)?.length ?? 0; } catch { return 0; } }
 
   connect(join: { userId: string; username: string; classId: string; charId: string }) {
     this.serverUrl = resolveServerUrl();
@@ -81,12 +85,14 @@ export class NetClient {
     });
 
     const s = this.socket;
+    // Conteo de tráfico entrante (aprox por tamaño JSON).
+    s.onAny((_event, ...args) => { this.bytesDown += this.approx(args); });
     s.on('connect', () => {
       this.handlers.onConnChange(true);
-      s.emit('join', join);
+      this.emit('join', join);
       // Medimos el RTT desde el cliente (un solo reloj → número real).
       if (this.pingTimer) clearInterval(this.pingTimer);
-      const sendPing = () => s.connected && s.emit('cping', { t: Date.now() });
+      const sendPing = () => { if (s.connected) this.emit('cping', { t: Date.now() }); };
       sendPing();
       this.pingTimer = setInterval(sendPing, 2000);
     });
@@ -101,25 +107,36 @@ export class NetClient {
     s.on('forceZone', (m: { zoneIdx: number; tx: number; ty: number }) =>
       this.handlers.onForceZone(m.zoneIdx, m.tx, m.ty));
     s.on('duel', (m: DuelMsg) => this.handlers.onDuel(m));
+    s.on('party', (m: { leaderId: string; members: { userId: string; username: string }[] }) => this.handlers.onParty(m));
+    s.on('party_invited', (m: { fromUserId: string; fromUsername: string }) => this.handlers.onPartyInvited(m));
 
     // Ping: el server hace eco de nuestro timestamp; calculamos RTT con NUESTRO reloj.
     s.on('cpong', (m: { t: number }) => {
       this.ping = Date.now() - m.t;          // RTT real (sin desfase de relojes)
-      s.emit('rtt', { ms: this.ping });      // se lo reportamos al server para la consola
+      this.emit('rtt', { ms: this.ping });   // se lo reportamos al server para la consola
       this.handlers.onPing(this.ping);
     });
   }
 
   // ── Intents salientes ──────────────────────────────────────────────────────
-  move(tx: number, ty: number, facing: number, moving: boolean) {
-    this.socket?.emit('move', { tx, ty, facing, moving });
+  private emit(event: string, payload?: unknown) {
+    this.bytesUp += this.approx([event, payload]);
+    this.socket?.emit(event, payload);
   }
-  zone(zoneIdx: number) { this.socket?.emit('zone', { zoneIdx }); }
-  cast(intent: CastIntent) { this.socket?.emit('cast', intent); }
-  pickup(tx: number, ty: number) { this.socket?.emit('pickup', { tx, ty }); }
-  usePotion(slot: number) { this.socket?.emit('usePotion', { slot }); }
-  matchmake() { this.socket?.emit('matchmake'); }
-  matchmakeCancel() { this.socket?.emit('matchmake_cancel'); }
+  move(tx: number, ty: number, facing: number, moving: boolean) {
+    this.emit('move', { tx, ty, facing, moving });
+  }
+  zone(zoneIdx: number) { this.emit('zone', { zoneIdx }); }
+  cast(intent: CastIntent) { this.emit('cast', intent); }
+  pickup(tx: number, ty: number) { this.emit('pickup', { tx, ty }); }
+  usePotion(slot: number) { this.emit('usePotion', { slot }); }
+  matchmake() { this.emit('matchmake'); }
+  matchmakeCancel() { this.emit('matchmake_cancel'); }
+  partyInvite(targetUserId: string) { this.emit('party_invite', { targetUserId }); }
+  partyAccept() { this.emit('party_accept'); }
+  partyDecline() { this.emit('party_decline'); }
+  partyKick(targetUserId: string) { this.emit('party_kick', { targetUserId }); }
+  partyLeave() { this.emit('party_leave'); }
 
   disconnect() {
     if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
