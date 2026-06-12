@@ -243,6 +243,7 @@ export function joinWorldChannel(
   onLeave: (userId: string) => void,
   onEnemies: (states: object[]) => void,
   onPresenceChange: (userIds: string[]) => void,
+  onEvent: (evt: Record<string, unknown>) => void,
 ): ReturnType<typeof supabase.channel> {
   if (_worldChannel) { supabase.removeChannel(_worldChannel); }
   _worldChannel = supabase.channel('world:positions', { config: { presence: { key: myUserId } } })
@@ -251,6 +252,9 @@ export function joinWorldChannel(
     })
     .on('broadcast', { event: 'enemies' }, ({ payload }) => {
       onEnemies(payload.states ?? []);
+    })
+    .on('broadcast', { event: 'evt' }, ({ payload }) => {
+      onEvent(payload as Record<string, unknown>);
     })
     .on('presence', { event: 'sync' }, () => {
       const state = _worldChannel!.presenceState();
@@ -265,6 +269,10 @@ export function joinWorldChannel(
       }
     });
   return _worldChannel;
+}
+
+export function broadcastEvent(payload: Record<string, unknown>) {
+  _worldChannel?.send({ type: 'broadcast', event: 'evt', payload });
 }
 
 export function broadcastPosition(payload: WorldPositionPayload) {

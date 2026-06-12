@@ -149,6 +149,8 @@ export class GameEngine {
   remotePlayers = new Map<string, RemotePEntry>();
   fps = 0; ping = 0;
   isHost = true;
+  // Non-host: called when player hits an enemy; relays the attack to host
+  onHitEnemy: ((idx: number, dmg: number, cc: CC | null, ccDur: number) => void) | null = null;
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -718,14 +720,14 @@ export class GameEngine {
     const dmg = this.calcDamage(sp);
     const tx = enemy.visX + TILE / 2, ty = enemy.visY + TILE / 2;
     const pcx = this.player.visX + TILE / 2, pcy = this.player.visY + TILE / 2;
+    const cc: CC = sp.cc || null; const ccDur = sp.cc_duration || 0;
     if (sp.effect === 'projectile') {
       this.projectile(pcx, pcy, tx, ty, c);
       const travel = Math.hypot(tx - pcx, ty - pcy) / 600;
-      this.pendingDamage.push({ t: travel, target: enemy, dmg, cc: sp.cc || null, ccDur: sp.cc_duration || 0, wx: tx, wy: ty });
+      this.pendingDamage.push({ t: travel, target: enemy, dmg, cc, ccDur, wx: tx, wy: ty });
     } else {
       this.explosion(tx, ty, c, 44);
-      this.hitEntity(enemy, dmg, tx, ty, true);
-      if (sp.cc) this.applyCC(enemy, sp.cc, sp.cc_duration || 1.5);
+      this.hitEntity(enemy, dmg, tx, ty, true, cc, ccDur);
     }
   }
 
@@ -733,24 +735,35 @@ export class GameEngine {
     return Math.max(1, Math.round(this.player.baseDamage * (DAMAGE_MULT[sp.damage_type] ?? 1)));
   }
 
-  // Aplica daño a un hostil + todo el "impacto" (flash, pop, número, hitstop, shake)
-  hitEntity(e: Entity, dmg: number, wx: number, wy: number, impactful = true) {
+  // Aplica daño a un hostil. En non-host, relay el golpe al host en vez de aplicarlo localmente.
+  hitEntity(e: Entity, dmg: number, wx: number, wy: number, impactful = true, cc: CC = null, ccDur = 0) {
     if (dmg <= 0) return;
+    const idx = e.kind !== 'player' ? this.enemies.indexOf(e) : -1;
+
+    // Non-host: relay al host, solo mostrar visual local
+    if (!this.isHost && idx >= 0 && this.onHitEnemy) {
+      this.floatText(wx, wy - TILE, `-${dmg}`, 0xff5050);
+      if (impactful) this.hitstop = Math.max(this.hitstop, 0.045);
+      this.onHitEnemy(idx, dmg, cc, ccDur);
+      return;
+    }
+
     e.hp = Math.max(0, e.hp - dmg);
     e.hitTimer = 0.13;
     this.floatText(wx, wy - TILE, `-${dmg}`, 0xff5050);
-    if (impactful) { this.hitstop = Math.max(this.hitstop, 0.045); }
+    if (impactful) this.hitstop = Math.max(this.hitstop, 0.045);
     this.addLog(`Atacaste a ${e.name} por ${dmg}. HP restante: ${Math.round(e.hp)}/${e.maxHp}`, '#ffb43c');
     if (e.hp <= 0) { e.alive = false; this.addLog(`${e.name} fue eliminado.`, '#ff4444'); }
+    if (cc) this.applyCC(e, cc, ccDur);
   }
 
   damageRadius(wx: number, wy: number, r: number, dmg: number, sp: any) {
+    const cc: CC = sp.cc || null; const ccDur = (sp.cc_duration || 1.5) * CC_AOE_MULT;
     for (const e of this.enemies) {
       if (!e.alive) continue;
       const ex = e.visX + TILE / 2, ey = e.visY + TILE / 2;
       if (Math.hypot(ex - wx, ey - wy) <= r) {
-        this.hitEntity(e, dmg, ex, ey, false);   // AoE: menos énfasis de impacto por target
-        if (sp.cc) this.applyCC(e, sp.cc, (sp.cc_duration || 1.5) * CC_AOE_MULT);
+        this.hitEntity(e, dmg, ex, ey, false, cc, ccDur);
       }
     }
   }
@@ -816,8 +829,7 @@ export class GameEngine {
       if (pd.t <= 0) {
         if (pd.target === this.player) this.damagePlayer(pd.dmg);
         else if (pd.target.alive) {
-          this.hitEntity(pd.target, pd.dmg, pd.wx, pd.wy, true);
-          if (pd.cc) this.applyCC(pd.target, pd.cc, pd.ccDur);
+          this.hitEntity(pd.target, pd.dmg, pd.wx, pd.wy, true, pd.cc, pd.ccDur);
         }
         this.explosion(pd.wx, pd.wy, 0xffaa40, 34);
       } else keep.push(pd);
@@ -998,15 +1010,16 @@ export class GameEngine {
   // ── Enemy sync (non-host) ────────────────────────────────────────────────────
   lerpEnemy(dt: number, e: Entity) {
     e.hitTimer = Math.max(0, e.hitTimer - dt);
-    if (!e.alive || e.moving) {
-      const ddx = e.tgtX - e.visX, ddy = e.tgtY - e.visY;
-      const dist = Math.hypot(ddx, ddy);
+    if (!e.alive) return;
+    const ddx = e.tgtX - e.visX, ddy = e.tgtY - e.visY;
+    const dist = Math.hypot(ddx, ddy);
+    if (dist > 1) {
       const speed = TILE / 0.25;
-      if (dist > 1) {
-        const step = speed * dt;
-        if (step >= dist) { e.visX = e.tgtX; e.visY = e.tgtY; e.moving = false; }
-        else { e.visX += (ddx / dist) * step; e.visY += (ddy / dist) * step; }
-      }
+      const step = speed * dt;
+      if (step >= dist) { e.visX = e.tgtX; e.visY = e.tgtY; e.moving = false; }
+      else { e.visX += (ddx / dist) * step; e.visY += (ddy / dist) * step; e.moving = true; }
+    } else {
+      e.moving = false;
     }
   }
 
@@ -1017,9 +1030,21 @@ export class GameEngine {
       e.tgtX = s.tileX * TILE; e.tgtY = s.tileY * TILE;
       e.moving = (e.tgtX !== e.visX || e.tgtY !== e.visY);
       e.facing = s.facing;
-      if (e.alive && !s.alive) { e.alive = false; e.hp = 0; }
-      else e.hp = s.hp;
+      if (e.alive && !s.alive) {
+        e.alive = false; e.hp = 0;
+        this.addLog(`${e.name} fue eliminado.`, '#ff4444');
+      } else if (s.alive) {
+        e.hp = s.hp;
+      }
     }
+  }
+
+  // Host aplica un golpe retransmitido desde otro cliente
+  applyRemoteAttack(idx: number, dmg: number, cc: CC | null, ccDur: number) {
+    const e = this.enemies[idx];
+    if (!e || !e.alive) return;
+    const wx = e.visX + TILE / 2, wy = e.visY + TILE / 2;
+    this.hitEntity(e, dmg, wx, wy, true, cc, ccDur);
   }
 
   getEnemyState() {

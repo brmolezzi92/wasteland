@@ -4,7 +4,7 @@ import { GameEngine, type HudState } from '../engine/GameEngine';
 import { TileMap, TILE_COLOR } from '../engine/tilemap';
 import {
   getChatMessages, sendChatMessage, subscribeChatMessages,
-  joinWorldChannel, broadcastPosition, broadcastEnemyState, leaveWorldChannel,
+  joinWorldChannel, broadcastPosition, broadcastEnemyState, broadcastEvent, leaveWorldChannel,
 } from '../lib/db';
 import type { DbChatMessage } from '../lib/db';
 import './GameHud.css';
@@ -156,13 +156,25 @@ export default function Game() {
         presenceIds.push(...ids.filter(id => id !== authUserId!));
         updateHost();
       },
+      (evt) => {
+        // Host: recibe golpe del no-host, lo aplica autoritativamente y difunde estado de inmediato
+        if (evt.type === 'atk' && engine.isHost) {
+          engine.applyRemoteAttack(
+            evt.idx as number,
+            evt.dmg as number,
+            (evt.cc as any) ?? null,
+            (evt.ccDur as number) ?? 0,
+          );
+          broadcastEnemyState(engine.getEnemyState());
+        }
+      },
     );
 
-    // ── Broadcast own position every 100ms, enemies every 300ms ─────────────
+    // ── Broadcast own position every 50ms, enemies every 100ms ─────────────
     let broadcastTimer = 0;
     let enemyBroadcastTimer = 0;
-    const BROADCAST_INTERVAL = 0.1;
-    const ENEMY_BROADCAST_INTERVAL = 0.3;
+    const BROADCAST_INTERVAL = 0.05;
+    const ENEMY_BROADCAST_INTERVAL = 0.1;
 
     // ── Ping: measure Supabase roundtrip every 5s ─────────────────────────────
     let pingTimer = 0;
@@ -179,6 +191,11 @@ export default function Game() {
       .then(() => {
         if (!alive) return;
         tileCanvasRef.current = buildTileCanvas(engine.map);
+
+        // Non-host: relay golpes al host en vez de aplicarlos localmente
+        engine.onHitEnemy = (idx, dmg, cc, ccDur) => {
+          broadcastEvent({ type: 'atk', idx, dmg, cc, ccDur });
+        };
         let last = 0;
         const loop = (t: number) => {
           if (!alive) return;
