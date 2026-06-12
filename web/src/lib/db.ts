@@ -228,6 +228,35 @@ export async function sendChatMessage(
   return !error;
 }
 
+// ─── Lobby presence (online status) ─────────────────────────────────────────
+let _lobbyChannel: ReturnType<typeof supabase.channel> | null = null;
+
+export function joinLobbyChannel(userId: string, onOnlineChange: (ids: Set<string>) => void) {
+  if (_lobbyChannel) supabase.removeChannel(_lobbyChannel);
+  _lobbyChannel = supabase.channel('lobby:online', { config: { presence: { key: userId } } })
+    .on('presence', { event: 'sync' }, () => {
+      const state = _lobbyChannel!.presenceState();
+      onOnlineChange(new Set(Object.keys(state)));
+    })
+    .on('presence', { event: 'join' }, () => {
+      const state = _lobbyChannel!.presenceState();
+      onOnlineChange(new Set(Object.keys(state)));
+    })
+    .on('presence', { event: 'leave' }, () => {
+      const state = _lobbyChannel!.presenceState();
+      onOnlineChange(new Set(Object.keys(state)));
+    })
+    .subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await _lobbyChannel!.track({ userId });
+      }
+    });
+}
+
+export function leaveLobbyChannel() {
+  if (_lobbyChannel) { supabase.removeChannel(_lobbyChannel); _lobbyChannel = null; }
+}
+
 // ─── World positions (Realtime Broadcast) ────────────────────────────────────
 export interface WorldPositionPayload {
   userId: string; username: string; classId: string;

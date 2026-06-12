@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { loadData } from './data';
 import { supabase } from './lib/supabase';
-import { getProfile, getCharacters, getFriends, getPendingRequests } from './lib/db';
+import { getProfile, getCharacters, getFriends, getPendingRequests, joinLobbyChannel, leaveLobbyChannel } from './lib/db';
 import LoginScreen from './screens/LoginScreen';
 import SetupScreen from './screens/SetupScreen';
 import MainMenu from './screens/MainMenu';
@@ -31,6 +31,8 @@ async function loadUserData(userId: string, email: string) {
   const profile = await getProfile(userId);
   if (!profile) { store.setScreen('login'); return; }
   store.setScreen('menu');
+
+  joinLobbyChannel(userId, (ids) => store.setOnlineUsers(ids));
 
   store.setProfile(profile);
   const [chars, friends, pending] = await Promise.all([
@@ -65,6 +67,7 @@ export default function App() {
         loadUserData(session.user.id, session.user.email ?? '');
       }
       if (event === 'SIGNED_OUT') {
+        leaveLobbyChannel();
         useStore.getState().clearAuth();
       }
     });

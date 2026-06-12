@@ -124,6 +124,7 @@ export default function MainMenu() {
   const selectedChar   = useStore((s) => s.selectedChar);
   const friends        = useStore((s) => s.friends);
   const pendingReqs    = useStore((s) => s.pendingRequests);
+  const onlineUserIds  = useStore((s) => s.onlineUserIds);
   const setSelectedChar = useStore((s) => s.setSelectedChar);
   const setFriends      = useStore((s) => s.setFriends);
   const setPending      = useStore((s) => s.setPending);
@@ -432,22 +433,33 @@ export default function MainMenu() {
                   Sin amigos aún
                 </p>
               )}
-              {friends.map(f => (
-                <button key={f.friendship_id} className="friend-item" style={{ cursor: 'default' }}>
-                  <div className="friend-avatar" style={{ borderColor: 'var(--amber-hot)' }}>
-                    <span>{f.username[0]}</span>
-                  </div>
-                  <div className="col" style={{gap:2}}>
-                    <span style={{fontSize:14}}>{f.username}</span>
-                    <span className="dim" style={{fontSize:11}}>{f.activity || 'Offline'}</span>
-                  </div>
-                  <button
-                    className="friend-invite dim"
-                    title="Eliminar amigo"
-                    onClick={(e) => { e.stopPropagation(); handleRemoveFriend(f); }}
-                  >✕</button>
-                </button>
-              ))}
+              {friends.map(f => {
+                const online = onlineUserIds.has(f.id);
+                return (
+                  <button key={f.friendship_id} className="friend-item" style={{ cursor: 'default' }}>
+                    <div className="friend-avatar" style={{ borderColor: online ? 'var(--green)' : 'var(--border)', position: 'relative' }}>
+                      <span>{f.username[0]}</span>
+                      <i style={{
+                        position: 'absolute', bottom: -2, right: -2,
+                        width: 8, height: 8, borderRadius: '50%',
+                        background: online ? 'var(--green)' : '#555',
+                        border: '1.5px solid var(--panel-2)',
+                      }} />
+                    </div>
+                    <div className="col" style={{gap:2}}>
+                      <span style={{fontSize:14}}>{f.username}</span>
+                      <span style={{fontSize:11, color: online ? 'var(--green)' : 'var(--text-dim)'}}>
+                        {online ? 'Online' : 'Offline'}
+                      </span>
+                    </div>
+                    <button
+                      className="friend-invite dim"
+                      title="Eliminar amigo"
+                      onClick={(e) => { e.stopPropagation(); handleRemoveFriend(f); }}
+                    >✕</button>
+                  </button>
+                );
+              })}
             </div>
 
             <button className="btn btn--ghost add-friend-btn" onClick={() => setShowAddFriend(true)}>
