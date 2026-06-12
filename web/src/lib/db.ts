@@ -241,21 +241,38 @@ export function joinWorldChannel(
   myUserId: string,
   onPlayer: (data: WorldPositionPayload) => void,
   onLeave: (userId: string) => void,
+  onEnemies: (states: object[]) => void,
+  onPresenceChange: (userIds: string[]) => void,
 ): ReturnType<typeof supabase.channel> {
   if (_worldChannel) { supabase.removeChannel(_worldChannel); }
   _worldChannel = supabase.channel('world:positions', { config: { presence: { key: myUserId } } })
     .on('broadcast', { event: 'pos' }, ({ payload }) => {
       if (payload.userId !== myUserId) onPlayer(payload as WorldPositionPayload);
     })
+    .on('broadcast', { event: 'enemies' }, ({ payload }) => {
+      onEnemies(payload.states ?? []);
+    })
+    .on('presence', { event: 'sync' }, () => {
+      const state = _worldChannel!.presenceState();
+      onPresenceChange(Object.keys(state));
+    })
     .on('presence', { event: 'leave' }, ({ leftPresences }) => {
       for (const p of leftPresences) onLeave(p.userId ?? p.key);
     })
-    .subscribe();
+    .subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await _worldChannel!.track({ userId: myUserId });
+      }
+    });
   return _worldChannel;
 }
 
 export function broadcastPosition(payload: WorldPositionPayload) {
   _worldChannel?.send({ type: 'broadcast', event: 'pos', payload });
+}
+
+export function broadcastEnemyState(states: object[]) {
+  _worldChannel?.send({ type: 'broadcast', event: 'enemies', payload: { states } });
 }
 
 export function leaveWorldChannel() {

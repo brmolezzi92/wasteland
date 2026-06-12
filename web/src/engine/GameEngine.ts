@@ -148,6 +148,7 @@ export class GameEngine {
 
   remotePlayers = new Map<string, RemotePEntry>();
   fps = 0; ping = 0;
+  isHost = true;
 
   keys = new Set<string>();
   pending: number | null = null;
@@ -501,7 +502,10 @@ export class GameEngine {
     // Hitstop: micro-freeze que ralentiza la sim brevemente al impactar
     if (this.hitstop > 0) { this.hitstop -= dt; dt *= 0.18; }
     this.updatePlayer(dt);
-    for (const e of this.enemies) this.updateEnemy(dt, e);
+    for (const e of this.enemies) {
+      if (this.isHost) this.updateEnemy(dt, e);
+      else this.lerpEnemy(dt, e);
+    }
     this.updatePendingDamage(dt);
     this.updatePendingAreas(dt);
     this.updateEffects(dt);
@@ -989,6 +993,39 @@ export class GameEngine {
         }
       }
     g.fill({ color: c, alpha: 0.18 }).stroke({ width: 1.5, color: c, alpha: 0.55 });
+  }
+
+  // ── Enemy sync (non-host) ────────────────────────────────────────────────────
+  lerpEnemy(dt: number, e: Entity) {
+    e.hitTimer = Math.max(0, e.hitTimer - dt);
+    if (!e.alive || e.moving) {
+      const ddx = e.tgtX - e.visX, ddy = e.tgtY - e.visY;
+      const dist = Math.hypot(ddx, ddy);
+      const speed = TILE / 0.25;
+      if (dist > 1) {
+        const step = speed * dt;
+        if (step >= dist) { e.visX = e.tgtX; e.visY = e.tgtY; e.moving = false; }
+        else { e.visX += (ddx / dist) * step; e.visY += (ddy / dist) * step; }
+      }
+    }
+  }
+
+  applyEnemyState(states: { idx: number; tileX: number; tileY: number; hp: number; alive: boolean; facing: number }[]) {
+    for (const s of states) {
+      const e = this.enemies[s.idx]; if (!e) continue;
+      e.tileX = s.tileX; e.tileY = s.tileY;
+      e.tgtX = s.tileX * TILE; e.tgtY = s.tileY * TILE;
+      e.moving = (e.tgtX !== e.visX || e.tgtY !== e.visY);
+      e.facing = s.facing;
+      if (e.alive && !s.alive) { e.alive = false; e.hp = 0; }
+      else e.hp = s.hp;
+    }
+  }
+
+  getEnemyState() {
+    return this.enemies.map((e, idx) => ({
+      idx, tileX: e.tileX, tileY: e.tileY, hp: Math.round(e.hp), alive: e.alive, facing: e.facing,
+    }));
   }
 
   // ── Remote players ───────────────────────────────────────────────────────────

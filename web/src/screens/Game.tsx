@@ -4,7 +4,7 @@ import { GameEngine, type HudState } from '../engine/GameEngine';
 import { TileMap, TILE_COLOR } from '../engine/tilemap';
 import {
   getChatMessages, sendChatMessage, subscribeChatMessages,
-  joinWorldChannel, broadcastPosition, leaveWorldChannel,
+  joinWorldChannel, broadcastPosition, broadcastEnemyState, leaveWorldChannel,
 } from '../lib/db';
 import type { DbChatMessage } from '../lib/db';
 import './GameHud.css';
@@ -128,20 +128,41 @@ export default function Game() {
     const engine = new GameEngine(selectedClass);
     engineRef.current = engine;
 
-    // ── Realtime world positions ──────────────────────────────────────────────
+    // ── Realtime world positions + enemy sync ─────────────────────────────────
     const remoteLastSeen = new Map<string, number>();
+    const presenceIds: string[] = [];
+
+    const updateHost = () => {
+      const sorted = [...presenceIds, authUserId!].sort();
+      engine.isHost = sorted[0] === authUserId!;
+    };
+
     joinWorldChannel(
       authUserId!,
       (data) => {
         engine.upsertRemotePlayer(data);
         remoteLastSeen.set(data.userId, Date.now());
       },
-      (userId) => { engine.removeRemotePlayer(userId); remoteLastSeen.delete(userId); },
+      (userId) => {
+        engine.removeRemotePlayer(userId);
+        remoteLastSeen.delete(userId);
+        const i = presenceIds.indexOf(userId);
+        if (i >= 0) presenceIds.splice(i, 1);
+        updateHost();
+      },
+      (states) => { if (!engine.isHost) engine.applyEnemyState(states as any); },
+      (ids) => {
+        presenceIds.length = 0;
+        presenceIds.push(...ids.filter(id => id !== authUserId!));
+        updateHost();
+      },
     );
 
-    // ── Broadcast own position every 100ms ───────────────────────────────────
+    // ── Broadcast own position every 100ms, enemies every 300ms ─────────────
     let broadcastTimer = 0;
+    let enemyBroadcastTimer = 0;
     const BROADCAST_INTERVAL = 0.1;
+    const ENEMY_BROADCAST_INTERVAL = 0.3;
 
     // ── Ping: measure Supabase roundtrip every 5s ─────────────────────────────
     let pingTimer = 0;
@@ -184,6 +205,13 @@ export default function Game() {
               hp: Math.round(p.hp), maxHp: p.maxHp,
               facing: p.facing, moving: p.moving,
             });
+          }
+
+          // Enemy state broadcast (host only)
+          enemyBroadcastTimer += dt;
+          if (enemyBroadcastTimer >= ENEMY_BROADCAST_INTERVAL) {
+            enemyBroadcastTimer = 0;
+            if (engine.isHost) broadcastEnemyState(engine.getEnemyState());
           }
 
           // Ping every 5s
