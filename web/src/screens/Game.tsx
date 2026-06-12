@@ -209,6 +209,10 @@ export default function Game() {
         engine.onPickup = (tileX, tileY) => {
           broadcastEvent({ type: 'pickup', tileX, tileY });
         };
+        // Reconstruir minimap tile canvas al cambiar de zona
+        engine.onZoneChange = () => {
+          tileCanvasRef.current = buildTileCanvas(engine.map);
+        };
         let last = 0;
         const loop = (t: number) => {
           if (!alive) return;

@@ -1,342 +1,662 @@
-export const TILE = 64; // tile size in pixels
+export const TILE     = 64;
+export const ZONE_W   = 100;
+export const ZONE_H   = 80;
+export const ZONE_COUNT = 10;
 
+// ─── Tile types ───────────────────────────────────────────────────────────────
 export const T = {
-  GRASS:      0,  // suelo verde — BASE BUENA, BOSQUE
-  DIRT:       1,  // tierra marrón — transición, wasteland
-  WATER:      2,  // SÓLIDO — barrera tóxica (impassable)
-  WALL:       3,  // SÓLIDO — muro de cemento
-  PATH:       4,  // camino empedrado
-  FORT:       5,  // piso de fortaleza enemiga
-  FORT_WALL:  6,  // SÓLIDO — muro de fortaleza
-  TOXIC:      7,  // suelo tóxico CAMINABLE (bordes laterales)
-  SAND:       8,  // arena del desierto
-  DUNGEON:    9,  // piso de dungeon
-  TREE:       10, // SÓLIDO — árbol / vegetación densa
+  GRASS:     0,
+  DIRT:      1,
+  WATER:     2,  // SÓLIDO
+  WALL:      3,  // SÓLIDO
+  PATH:      4,
+  FORT:      5,
+  FORT_WALL: 6,  // SÓLIDO
+  TOXIC:     7,
+  SAND:      8,
+  DUNGEON:   9,
+  TREE:      10, // SÓLIDO
 } as const;
 
 export const SOLID: Record<number, boolean> = {
-  [T.GRASS]: false,    [T.DIRT]: false,    [T.WATER]: true,
-  [T.WALL]: true,      [T.PATH]: false,    [T.FORT]: false,
-  [T.FORT_WALL]: true, [T.TOXIC]: false,   [T.SAND]: false,
-  [T.DUNGEON]: false,  [T.TREE]: true,
+  0: false, 1: false, 2: true,  3: true,  4: false,
+  5: false, 6: true,  7: false, 8: false, 9: false, 10: true,
 };
 
 export const TILE_SPRITE: Record<number, string> = {
-  [T.GRASS]:     'floor',
-  [T.DIRT]:      'dirt',
-  [T.WATER]:     'toxic',
-  [T.WALL]:      'wall',
-  [T.PATH]:      'path',
-  [T.FORT]:      'floor',
-  [T.FORT_WALL]: 'wall',
-  [T.TOXIC]:     'toxic',
-  [T.SAND]:      'dirt',
-  [T.DUNGEON]:   'floor',
-  [T.TREE]:      'wall',
+  0: 'floor', 1: 'dirt',  2: 'toxic', 3: 'wall', 4: 'path',
+  5: 'floor', 6: 'wall',  7: 'toxic', 8: 'dirt', 9: 'floor', 10: 'floor',
 };
 
 export const TILE_COLOR: Record<number, number> = {
-  [T.GRASS]:     0x2a6e25,  // verde profundo
-  [T.DIRT]:      0x5a3a1a,  // tierra marrón
-  [T.WATER]:     0x2e5c10,  // tóxico sólido verde oscuro
-  [T.WALL]:      0x383838,  // gris concreto
-  [T.PATH]:      0x7a6a48,  // piedra camino
-  [T.FORT]:      0x2a1808,  // piso fortaleza naranja oscuro
-  [T.FORT_WALL]: 0x180c04,  // muro fortaleza muy oscuro
-  [T.TOXIC]:     0x8ab820,  // verde lima tóxico brillante
-  [T.SAND]:      0xc4a050,  // arena amarilla
-  [T.DUNGEON]:   0x18182a,  // azul-negro dungeon
-  [T.TREE]:      0x1a4010,  // verde muy oscuro árbol
+  0: 0x3a5e28,  1: 0x7c5a38,  2: 0x1a2e08,  3: 0x3a3a3a,
+  4: 0x6e6248,  5: 0x3a3e44,  6: 0x2a2e34,  7: 0x8ab820,
+  8: 0xc4a050,  9: 0x18182a, 10: 0x1a4010,
 };
 
-function mulberry32(seed: number) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+// ─── Zone names ───────────────────────────────────────────────────────────────
+export const ZONE_NAMES = [
+  'Base del Jugador',
+  'Praderas del Sur',
+  'Bosque del Sur',
+  'Bosque del Norte',
+  'Desierto',
+  'Ruinas Antiguas',
+  'Zona Tóxica',
+  'Dungeon',
+  'Dungeon Profundo',
+  'Base IA Enemiga',
+];
+
+// ─── Interfaces ───────────────────────────────────────────────────────────────
+export interface PropDef {
+  key: string;
+  tx: number;
+  ty: number;
+  scale?: number;
 }
 
-// ─── ZONAS DEL MAPA (100 × 500 tiles) ────────────────────────────────────────
-//   rows   0 –  79  → BASE IA ENEMIGA        (80 tiles)
-//   rows  80 –  94  → BARRERA TÓXICA NORTE   (15 tiles, sólida)
-//   rows  95 – 194  → DUNGEON + NPCS ALTO    (100 tiles)
-//   rows 195 – 209  → BARRERA TÓXICA SUR     (15 tiles, sólida)
-//   rows 210 – 309  → BIOMA DESIERTO         (100 tiles)
-//   rows 310 – 409  → BIOMA VERDE BOSQUE     (100 tiles)
-//   rows 410 – 499  → BASE BUENA             (90 tiles)
-//   cols   0 –   4  → BORDE TÓXICO IZQUIERDO (caminable)
-//   cols  95 –  99  → BORDE TÓXICO DERECHO   (caminable)
+export interface EnemySpawn {
+  tx: number; ty: number; name: string; hp: number;
+}
 
-export const ZONE = {
-  ENEMY_BASE:  { y0: 0,   y1: 79  },
-  TOXIC_N:     { y0: 80,  y1: 94  },
-  DUNGEON:     { y0: 95,  y1: 194 },
-  TOXIC_S:     { y0: 195, y1: 209 },
-  DESERT:      { y0: 210, y1: 309 },
-  FOREST:      { y0: 310, y1: 409 },
-  PLAYER_BASE: { y0: 410, y1: 499 },
-} as const;
+export interface NpcSpawn {
+  tx: number; ty: number; name: string;
+}
 
-// camino central: cols 48–51 (4 tiles de ancho)
-const PATH_X = [48, 49, 50, 51];
-
-export const SPAWN = {
-  player: { tx: 50, ty: 460 },
-
-  npcs: [
-    { tx: 44, ty: 428, name: 'Comandante'  },
-    { tx: 56, ty: 428, name: 'Explorador'  },
-    { tx: 50, ty: 440, name: 'Alquimista'  },
-    { tx: 40, ty: 455, name: 'Mecánico'    },
-    { tx: 60, ty: 455, name: 'Mercader'    },
-  ],
-
-  enemies: [
-    // ── BASE IA ENEMIGA ───────────────────────────────────────
-    { tx: 30, ty: 12, name: 'Bandido Tirador', hp: 80  },
-    { tx: 70, ty: 12, name: 'Bandido Tirador', hp: 80  },
-    { tx: 20, ty: 42, name: 'Bandido Bruto',   hp: 120 },
-    { tx: 80, ty: 42, name: 'Bandido Bruto',   hp: 120 },
-    { tx: 35, ty: 65, name: 'Torreta',         hp: 100 },
-    { tx: 65, ty: 65, name: 'Torreta',         hp: 100 },
-    { tx: 20, ty: 65, name: 'Bandido Tirador', hp: 80  },
-    { tx: 80, ty: 65, name: 'Bandido Tirador', hp: 80  },
-    { tx: 50, ty: 40, name: 'Torreta',         hp: 100 },
-    // ── DUNGEON ───────────────────────────────────────────────
-    { tx: 28, ty: 115, name: 'Chamán Corrupto',  hp: 160 },
-    { tx: 72, ty: 115, name: 'Esqueleto Mago',   hp: 95  },
-    { tx: 50, ty: 140, name: 'Chamán Corrupto',  hp: 160 },
-    { tx: 25, ty: 148, name: 'Esqueleto Rogue',  hp: 75  },
-    { tx: 75, ty: 148, name: 'Esqueleto Rogue',  hp: 75  },
-    { tx: 36, ty: 168, name: 'Esqueleto Base',   hp: 85  },
-    { tx: 64, ty: 168, name: 'Esqueleto Base',   hp: 85  },
-    { tx: 22, ty: 185, name: 'Esqueleto Mago',   hp: 95  },
-    { tx: 78, ty: 185, name: 'Esqueleto Mago',   hp: 95  },
-    // ── BIOMA DESIERTO ────────────────────────────────────────
-    { tx: 20, ty: 228, name: 'Esqueleto Rogue',  hp: 75  },
-    { tx: 80, ty: 228, name: 'Bandido Tirador',  hp: 80  },
-    { tx: 35, ty: 255, name: 'Bandido Bruto',    hp: 120 },
-    { tx: 65, ty: 255, name: 'Esqueleto Base',   hp: 85  },
-    { tx: 50, ty: 278, name: 'Bandido Tirador',  hp: 80  },
-    { tx: 20, ty: 298, name: 'Bandido Bruto',    hp: 120 },
-    { tx: 80, ty: 298, name: 'Esqueleto Rogue',  hp: 75  },
-    // ── BIOMA BOSQUE ──────────────────────────────────────────
-    { tx: 20, ty: 330, name: 'Esqueleto Base',   hp: 85  },
-    { tx: 80, ty: 330, name: 'Bandido Tirador',  hp: 80  },
-    { tx: 35, ty: 360, name: 'Bandido Bruto',    hp: 120 },
-    { tx: 65, ty: 360, name: 'Esqueleto Rogue',  hp: 75  },
-    { tx: 50, ty: 390, name: 'Bandido Tirador',  hp: 80  },
-  ],
-
-  boss: { tx: 50, ty: 15, name: 'El Devorador', hp: 600 },
-};
-
+// ─── TileMap ──────────────────────────────────────────────────────────────────
 export class TileMap {
-  width: number; height: number;
+  readonly width  = ZONE_W;
+  readonly height = ZONE_H;
   tiles: number[][];
+  props:   PropDef[]   = [];
+  enemies: EnemySpawn[] = [];
+  boss:    EnemySpawn | null = null;
+  npcs:    NpcSpawn[]  = [];
+  playerSpawn = { tx: 50, ty: ZONE_H - 6 };
+  groundItemIds: string[] = ['scrap'];
+  groundItemCount = 10;
+  readonly zoneIdx: number;
 
-  constructor(width = 100, height = 500, seed = 7) {
-    this.width = width; this.height = height;
-    const rng = mulberry32(seed);
-    const t: number[][] = Array.from({ length: height }, () => Array(width).fill(T.GRASS));
-
-    // ── BORDES TÓXICOS LATERALES (toda la altura) ─────────────────────────────
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < 5; x++) t[y][x] = T.TOXIC;
-      for (let x = 95; x < width; x++) t[y][x] = T.TOXIC;
-    }
-
-    // ── BASE IA ENEMIGA (rows 0–79) ──────────────────────────────────────────
-    for (let y = 0; y <= 79; y++)
-      for (let x = 5; x < 95; x++) t[y][x] = T.FORT;
-
-    // Perimeter walls
-    for (let x = 5; x < 95; x++) { t[0][x] = T.FORT_WALL; t[79][x] = T.FORT_WALL; }
-    for (let y = 0; y <= 79; y++) { t[y][5] = T.FORT_WALL; t[y][94] = T.FORT_WALL; }
-
-    // South entrance gap
-    for (const px of PATH_X) t[79][px] = T.FORT;
-
-    // Guard towers (4 corners, 3×3)
-    for (const [cx, cy] of [[8,2],[90,2],[8,76],[90,76]]) {
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dx = -1; dx <= 1; dx++)
-          t[cy + dy][cx + dx] = T.FORT_WALL;
-    }
-
-    // Inner dividing wall row 32 — separates outer patrol from inner sanctum
-    for (let x = 6; x < 94; x++) t[32][x] = T.FORT_WALL;
-    for (const px of PATH_X) t[32][px] = T.FORT;
-    // Side passages in dividing wall
-    t[32][20] = T.FORT; t[32][21] = T.FORT;
-    t[32][78] = T.FORT; t[32][79] = T.FORT;
-
-    // Inner sanctum wall row 58
-    for (let x = 6; x < 94; x++) t[58][x] = T.FORT_WALL;
-    for (const px of PATH_X) t[58][px] = T.FORT;
-    t[58][20] = T.FORT; t[58][21] = T.FORT;
-    t[58][78] = T.FORT; t[58][79] = T.FORT;
-
-    // Command center box (rows 3–26, cols 35–65)
-    for (let x = 35; x <= 65; x++) { t[3][x] = T.FORT_WALL; t[26][x] = T.FORT_WALL; }
-    for (let y = 3; y <= 26; y++) { t[y][35] = T.FORT_WALL; t[y][65] = T.FORT_WALL; }
-    // Command center entrance (south wall gap)
-    for (const px of PATH_X) t[26][px] = T.FORT;
-
-    // Barracks east/west (small rooms)
-    for (const [bx, by] of [[10, 38], [84, 38], [10, 62], [84, 62]]) {
-      for (let dy = 0; dy < 5; dy++)
-        for (let dx = 0; dx < 6; dx++)
-          if (dy === 0 || dy === 4 || dx === 0 || dx === 5)
-            t[by + dy][bx + dx] = T.FORT_WALL;
-    }
-
-    // ── BARRERA TÓXICA NORTE (rows 80–94) ────────────────────────────────────
-    for (let y = 80; y <= 94; y++)
-      for (let x = 5; x < 95; x++) t[y][x] = T.WATER;
-    // Gap central para pasar
-    for (let y = 80; y <= 94; y++)
-      for (const px of PATH_X) t[y][px] = T.PATH;
-
-    // ── DUNGEON / NPCS NIVEL ALTO (rows 95–194) ───────────────────────────────
-    for (let y = 95; y <= 194; y++)
-      for (let x = 5; x < 95; x++) t[y][x] = T.DUNGEON;
-
-    // Pilares (2×2 FORT_WALL)
-    const pillars = [
-      [18,108],[82,108],[18,148],[82,148],[18,185],[82,185],
-      [35,128],[65,128],[35,168],[65,168],[35,188],[65,188],
-    ];
-    for (const [px, py] of pillars)
-      for (let dy = 0; dy < 2; dy++)
-        for (let dx = 0; dx < 2; dx++)
-          if (px+dx >= 6 && px+dx < 94 && py+dy >= 96 && py+dy <= 193)
-            t[py+dy][px+dx] = T.FORT_WALL;
-
-    // Muros internos del dungeon (habitaciones)
-    for (let x = 6; x < 94; x++) {
-      if (x < 44 || x > 55) { t[130][x] = T.FORT_WALL; }
-    }
-    for (let x = 6; x < 94; x++) {
-      if (x < 44 || x > 55) { t[170][x] = T.FORT_WALL; }
-    }
-
-    // Pozos tóxicos del dungeon
-    for (const [px, py, r] of [[28,120,3],[72,160,3],[50,188,2]]) {
-      for (let dy = -r; dy <= r; dy++)
-        for (let dx = -r; dx <= r; dx++)
-          if (dx*dx+dy*dy <= r*r && px+dx >= 6 && px+dx < 94 && py+dy >= 96 && py+dy <= 193)
-            t[py+dy][px+dx] = T.WATER;
-    }
-
-    // ── BARRERA TÓXICA SUR (rows 195–209) ────────────────────────────────────
-    for (let y = 195; y <= 209; y++)
-      for (let x = 5; x < 95; x++) t[y][x] = T.WATER;
-    for (let y = 195; y <= 209; y++)
-      for (const px of PATH_X) t[y][px] = T.PATH;
-
-    // ── BIOMA DESIERTO (rows 210–309) ────────────────────────────────────────
-    for (let y = 210; y <= 309; y++)
-      for (let x = 5; x < 95; x++) t[y][x] = T.SAND;
-
-    // Ruinas (perímetros de WALL)
-    const ruins = [[15,222],[85,222],[12,260],[88,260],[25,278],[75,278],[15,295],[85,295],[35,240],[65,240]];
-    for (const [rx, ry] of ruins) {
-      const w = 3 + Math.floor(rng() * 6);
-      const h = 2 + Math.floor(rng() * 5);
-      for (let dy = 0; dy < h; dy++)
-        for (let dx = 0; dx < w; dx++)
-          if ((dy === 0 || dy === h-1 || dx === 0 || dx === w-1)
-              && rx+dx >= 6 && rx+dx < 94 && ry+dy >= 211 && ry+dy <= 308)
-            t[ry+dy][rx+dx] = T.WALL;
-    }
-
-    // Parches de DIRT en la arena
-    for (let i = 0; i < 20; i++) {
-      const px = 6 + Math.floor(rng() * 87);
-      const py = 212 + Math.floor(rng() * 95);
-      const r = 1 + Math.floor(rng() * 3);
-      for (let dy = -r; dy <= r; dy++)
-        for (let dx = -r; dx <= r; dx++)
-          if (dx*dx+dy*dy <= r*r && t[py+dy]?.[px+dx] === T.SAND)
-            t[py+dy][px+dx] = T.DIRT;
-    }
-
-    // ── BIOMA VERDE BOSQUE (rows 310–409) ────────────────────────────────────
-    for (let y = 310; y <= 409; y++)
-      for (let x = 5; x < 95; x++) t[y][x] = T.GRASS;
-
-    // Clusters de árboles (círculos de TREE)
-    const treeClusters = [
-      [14,325,5],[86,325,5],[22,348,6],[78,348,6],
-      [14,372,5],[86,372,5],[30,390,4],[70,390,4],
-      [14,402,4],[86,402,4],[40,330,4],[60,330,4],
-    ];
-    for (const [cx, cy, r] of treeClusters) {
-      for (let dy = -r; dy <= r; dy++)
-        for (let dx = -r; dx <= r; dx++)
-          if (dx*dx+dy*dy <= r*r && cx+dx >= 6 && cx+dx < 94 && cy+dy >= 311 && cy+dy <= 408)
-            if (rng() > 0.28)
-              t[cy+dy][cx+dx] = T.TREE;
-    }
-
-    // Camino sinuoso en el bosque (S-curve de PATH)
-    for (let y = 310; y <= 409; y++) {
-      const off = Math.round(6 * Math.sin((y - 310) * 0.06));
-      const cx = 49 + off;
-      for (let dx = -2; dx <= 2; dx++)
-        if (cx+dx >= 6 && cx+dx < 94 && !SOLID[t[y][cx+dx]])
-          t[y][cx+dx] = T.PATH;
-    }
-
-    // ── BASE BUENA (rows 410–499) ─────────────────────────────────────────────
-    // GRASS ya por defecto
-    // Perimeter wall
-    for (let x = 5; x < 95; x++) { t[410][x] = T.WALL; t[499][x] = T.WALL; }
-    for (let y = 410; y <= 499; y++) { t[y][5] = T.WALL; t[y][94] = T.WALL; }
-    // North entrance
-    for (const px of PATH_X) t[410][px] = T.GRASS;
-
-    // Plaza central con PATH
-    for (let x = 6; x < 94; x++) if (!SOLID[t[440][x]]) t[440][x] = T.PATH;
-    for (let y = 411; y <= 499; y++) if (!SOLID[t[y][49]]) t[y][49] = T.PATH;
-    for (let y = 411; y <= 499; y++) if (!SOLID[t[y][50]]) t[y][50] = T.PATH;
-
-    // Muros internos de la base (cuartos laterales)
-    for (let y = 415; y <= 435; y++) { t[y][20] = T.WALL; t[y][79] = T.WALL; }
-    t[435][20] = T.GRASS; t[435][79] = T.GRASS; // entrada
-
-    // ── CAMINO CENTRAL VERTICAL (conecta todo el mapa) ───────────────────────
-    for (let y = 0; y < height; y++)
-      for (const px of PATH_X)
-        if (!SOLID[t[y][px]]) t[y][px] = T.PATH;
-
-    // ── CLEAR AREAS alrededor de spawns ──────────────────────────────────────
-    const zoneTile = (cy: number) =>
-      cy <= 79 ? T.FORT : cy <= 194 ? T.DUNGEON : cy <= 309 ? T.SAND : cy <= 409 ? T.GRASS : T.GRASS;
-
-    const clearArea = (cx: number, cy: number, r = 2) => {
-      const fill = zoneTile(cy);
-      for (let dy = -r; dy <= r; dy++)
-        for (let dx = -r; dx <= r; dx++) {
-          const nx = cx + dx, ny = cy + dy;
-          if (nx > 5 && nx < 94 && ny > 0 && ny < height - 1)
-            if (SOLID[t[ny][nx]]) t[ny][nx] = fill;
-        }
-    };
-
-    clearArea(SPAWN.player.tx, SPAWN.player.ty, 3);
-    for (const npc of SPAWN.npcs) clearArea(npc.tx, npc.ty, 2);
-    for (const e of SPAWN.enemies)  clearArea(e.tx, e.ty, 1);
-    clearArea(SPAWN.boss.tx, SPAWN.boss.ty, 3);
-
-    this.tiles = t;
+  constructor(zoneIdx: number) {
+    this.zoneIdx = zoneIdx;
+    this.tiles = Array.from({ length: ZONE_H }, () => new Array(ZONE_W).fill(T.GRASS));
+    this.generate();
   }
 
   isSolid(tx: number, ty: number): boolean {
-    if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return true;
-    return SOLID[this.tiles[ty][tx]] ?? true;
+    if (tx < 0 || tx >= ZONE_W) return true;
+    if (ty < 0 || ty >= ZONE_H) return false; // north/south edges = zone exit (passable)
+    return !!(SOLID[this.tiles[ty][tx]]);
+  }
+
+  // ── helpers ─────────────────────────────────────────────────────────────────
+  private f(r0: number, r1: number, c0: number, c1: number, tile: number) {
+    for (let r = Math.max(0, r0); r <= Math.min(ZONE_H - 1, r1); r++)
+      for (let c = Math.max(0, c0); c <= Math.min(ZONE_W - 1, c1); c++)
+        this.tiles[r][c] = tile;
+  }
+  private p(key: string, tx: number, ty: number, scale = 1.0) {
+    this.props.push({ key, tx, ty, scale });
+  }
+  private e(name: string, tx: number, ty: number, hp: number) {
+    this.enemies.push({ name, tx, ty, hp });
+  }
+  // Deterministic hash for pseudo-random patterns (no Math.random)
+  private h(r: number, c: number) { return ((r * 1009 + c * 1013 + r * c) & 0x7fffffff) % 100; }
+
+  // North + South passage cols kept clear
+  private openPassage() {
+    for (let r = 0; r < ZONE_H; r++) {
+      for (let c = 47; c <= 52; c++) {
+        if (this.tiles[r][c] !== T.WATER) this.tiles[r][c] = T.PATH;
+      }
+    }
+  }
+
+  private generate() {
+    switch (this.zoneIdx) {
+      case 0: this.genBase();       break;
+      case 1: this.genPraderas();   break;
+      case 2: this.genBosqueSur();  break;
+      case 3: this.genBosqueNorte(); break;
+      case 4: this.genDesierto();   break;
+      case 5: this.genRuinas();     break;
+      case 6: this.genToxic();      break;
+      case 7: this.genDungeon();    break;
+      case 8: this.genDungeonDeep(); break;
+      case 9: this.genBaseIA();     break;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 0: BASE DEL JUGADOR (safe, NPCs, shops)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genBase() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.GRASS);
+    // Perimeter walls
+    this.f(0, ZONE_H - 1, 0,  1,          T.WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 2, ZONE_W - 1, T.WALL);
+    this.f(ZONE_H - 2, ZONE_H - 1, 0, ZONE_W - 1, T.WALL); // south = no exit
+    this.f(0, 1, 0, ZONE_W - 1, T.WALL);
+    // North entrance corridor (path)
+    this.f(0, 3, 46, 53, T.PATH);
+    // Main vertical path
+    this.f(0, ZONE_H - 3, 47, 52, T.PATH);
+    // Horizontal cross paths
+    this.f(28, 30, 2, ZONE_W - 3, T.PATH);
+    this.f(52, 54, 2, ZONE_W - 3, T.PATH);
+    // ── West building (armory) ─────────────────────────────────────────────────
+    this.f(6, 24,  5, 38, T.GRASS);
+    this.f(6,  6,  5, 38, T.WALL);
+    this.f(24, 24, 5, 38, T.WALL);
+    this.f(6, 24,  5,  5, T.WALL);
+    this.f(6, 24, 38, 38, T.WALL);
+    this.f(14, 16,  5,  5, T.PATH);  // west door
+    this.f(14, 16, 38, 38, T.PATH);  // east door
+    this.f(9, 9,  10, 20, T.WALL);   // inner divider
+    this.f(9, 9,  23, 35, T.WALL);
+    // ── East building (depot) ──────────────────────────────────────────────────
+    this.f(6, 24, 62, 95, T.GRASS);
+    this.f(6,  6, 62, 95, T.WALL);
+    this.f(24, 24, 62, 95, T.WALL);
+    this.f(6, 24, 62, 62, T.WALL);
+    this.f(6, 24, 95, 95, T.WALL);
+    this.f(14, 16, 62, 62, T.PATH);
+    this.f(14, 16, 95, 95, T.PATH);
+    // ── Central command hall ───────────────────────────────────────────────────
+    this.f(33, 50, 37, 63, T.FORT);
+    this.f(33, 33, 37, 63, T.FORT_WALL);
+    this.f(50, 50, 37, 63, T.FORT_WALL);
+    this.f(33, 50, 37, 37, T.FORT_WALL);
+    this.f(33, 50, 63, 63, T.FORT_WALL);
+    this.f(38, 45, 37, 37, T.PATH); // west door
+    this.f(38, 45, 63, 63, T.PATH); // east door
+    this.f(33, 33, 47, 52, T.PATH); // north door
+    // Spawn in south, center
+    this.playerSpawn = { tx: 50, ty: 68 };
+    // NPCs inside the command hall
+    this.npcs = [
+      { tx: 50, ty: 40, name: 'Comandante' },
+      { tx: 42, ty: 43, name: 'Explorador' },
+      { tx: 58, ty: 43, name: 'Alquimista' },
+      { tx: 42, ty: 57, name: 'Mecánico'   },
+      { tx: 58, ty: 57, name: 'Mercader'   },
+    ];
+    // Props
+    this.p('lockers',    10, 10, 1.6);  this.p('lockers',    10, 16, 1.6);
+    this.p('locker',     88, 10, 2.0);  this.p('locker',     90, 10, 2.0);
+    this.p('locker',     88, 18, 2.0);  this.p('locker',     90, 18, 2.0);
+    this.p('barrel',     25, 15, 2.5);  this.p('barrel',     28, 15, 2.5);
+    this.p('barrel',     72, 15, 2.5);  this.p('barrel',     75, 15, 2.5);
+    this.p('rock_a',     20, 65, 2.5);  this.p('rock_b',     24, 68, 2.5);
+    this.p('bush_a',     78, 62, 2.2);  this.p('bush_b',     82, 66, 2.2);
+    this.groundItemIds  = ['scrap'];
+    this.groundItemCount = 6;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 1: PRADERAS DEL SUR (easy zone, intro)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genPraderas() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.GRASS);
+    this.f(0, ZONE_H - 1, 0,  2, T.WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 3, ZONE_W - 1, T.WALL);
+    // Dirt patches
+    this.f(12, 18, 12, 24, T.DIRT);
+    this.f(32, 40, 68, 82, T.DIRT);
+    this.f(58, 65, 18, 32, T.DIRT);
+    // Scattered light tree lines
+    const ltrees = [
+      [8,6],[8,14],[8,22],[8,30],[8,38],[8,44],
+      [9,7],[9,15],[9,23],[9,31],
+      [22,6],[22,12],[22,20],[22,36],[22,43],
+      [38,8],[38,16],[38,24],[38,38],[38,44],
+      [50,6],[50,14],[50,22],[50,38],[50,44],
+      [62,8],[62,14],[62,24],[62,38],
+      [70,6],[70,16],[70,30],[70,42],
+      // East side
+      [8,56],[8,64],[8,72],[8,82],[8,90],
+      [22,55],[22,62],[22,70],[22,80],[22,88],
+      [38,56],[38,66],[38,74],[38,84],[38,92],
+      [52,58],[52,66],[52,76],[52,86],
+      [64,56],[64,66],[64,74],[64,84],[64,92],
+    ];
+    for (const [r, c] of ltrees) {
+      if (c < 45 || c > 54) {
+        this.tiles[r][c] = T.TREE;
+        if (r + 1 < ZONE_H) this.tiles[r + 1][c] = T.TREE;
+      }
+    }
+    this.openPassage();
+    this.enemies = [
+      { tx: 18, ty: 18, name: 'Bandido Tirador', hp: 80 },
+      { tx: 76, ty: 25, name: 'Bandido Tirador', hp: 80 },
+      { tx: 14, ty: 50, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 82, ty: 55, name: 'Bandido Tirador', hp: 80 },
+      { tx: 38, ty: 42, name: 'Bandido Tirador', hp: 80 },
+    ];
+    this.props = [
+      { key: 'rock_a', tx: 24, ty: 40, scale: 2.2 },
+      { key: 'rock_b', tx: 27, ty: 43, scale: 2.2 },
+      { key: 'bush_a', tx: 62, ty: 20, scale: 2.0 },
+      { key: 'bush_b', tx: 28, ty: 68, scale: 2.0 },
+      { key: 'bush_a', tx: 74, ty: 50, scale: 2.0 },
+      { key: 'bush_b', tx: 10, ty: 44, scale: 2.0 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['scrap', 'hierba_medicinal'];
+    this.groundItemCount = 10;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 2: BOSQUE DEL SUR
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genBosqueSur() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.GRASS);
+    this.f(0, ZONE_H - 1, 0,  2, T.WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 3, ZONE_W - 1, T.WALL);
+    // Dense tree grid (west + east)
+    for (let r = 4; r < ZONE_H - 4; r += 4) {
+      for (let c = 3; c < 45; c += 4) {
+        if (this.h(r, c) > 28) {
+          this.tiles[r][c] = T.TREE;
+          if (r + 1 < ZONE_H) this.tiles[r + 1][c] = T.TREE;
+        }
+      }
+      for (let c = 55; c < ZONE_W - 3; c += 4) {
+        if (this.h(r, c) > 28) {
+          this.tiles[r][c] = T.TREE;
+          if (r + 1 < ZONE_H) this.tiles[r + 1][c] = T.TREE;
+        }
+      }
+    }
+    // Clearings for enemies
+    this.f(12, 18, 10, 20, T.GRASS);
+    this.f(12, 18, 78, 88, T.GRASS);
+    this.f(38, 46, 10, 20, T.GRASS);
+    this.f(38, 46, 78, 88, T.GRASS);
+    this.f(60, 68, 14, 26, T.GRASS);
+    this.openPassage();
+    this.enemies = [
+      { tx: 14, ty: 14, name: 'Bandido Tirador', hp: 80  },
+      { tx: 82, ty: 14, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 14, ty: 42, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 82, ty: 42, name: 'Bandido Tirador', hp: 80  },
+      { tx: 18, ty: 64, name: 'Esqueleto Base',  hp: 85  },
+    ];
+    this.props = [
+      { key: 'tree_a', tx: 33, ty: 20, scale: 1.8 },
+      { key: 'tree_b', tx: 65, ty: 30, scale: 1.8 },
+      { key: 'tree_a', tx: 20, ty: 50, scale: 1.8 },
+      { key: 'tree_b', tx: 78, ty: 55, scale: 1.8 },
+      { key: 'bush_a', tx: 40, ty: 14, scale: 2.0 },
+      { key: 'bush_b', tx: 68, ty: 26, scale: 2.0 },
+      { key: 'bush_a', tx: 26, ty: 72, scale: 2.0 },
+      { key: 'rock_a', tx: 14, ty: 30, scale: 2.2 },
+      { key: 'rock_b', tx: 84, ty: 60, scale: 2.2 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['madera_reforzada', 'hierba_medicinal'];
+    this.groundItemCount = 14;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 3: BOSQUE DEL NORTE (dense)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genBosqueNorte() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.GRASS);
+    this.f(0, ZONE_H - 1, 0,  2, T.WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 3, ZONE_W - 1, T.WALL);
+    // Very dense forest
+    for (let r = 3; r < ZONE_H - 3; r += 3) {
+      for (let c = 3; c < ZONE_W - 3; c += 3) {
+        if ((c < 45 || c > 54) && this.h(r, c) > 32) {
+          this.tiles[r][c] = T.TREE;
+          if (r + 1 < ZONE_H) this.tiles[r + 1][c] = T.TREE;
+        }
+      }
+    }
+    // Clearings
+    this.f(14, 22, 14, 24, T.GRASS);
+    this.f(14, 22, 76, 86, T.GRASS);
+    this.f(42, 52, 12, 22, T.GRASS);
+    this.f(42, 52, 78, 88, T.GRASS);
+    this.f(60, 70, 18, 30, T.GRASS);
+    this.f(60, 70, 70, 82, T.GRASS);
+    this.openPassage();
+    this.enemies = [
+      { tx: 18, ty: 16, name: 'Esqueleto Base',  hp: 85  },
+      { tx: 80, ty: 18, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 16, ty: 46, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 82, ty: 47, name: 'Esqueleto Base',  hp: 85  },
+      { tx: 22, ty: 65, name: 'Bandido Tirador', hp: 80  },
+      { tx: 75, ty: 65, name: 'Esqueleto Rogue', hp: 75  },
+    ];
+    this.props = [
+      { key: 'tree_a', tx: 30, ty: 8,  scale: 2.0 },
+      { key: 'tree_b', tx: 68, ty: 10, scale: 2.0 },
+      { key: 'tree_a', tx: 25, ty: 35, scale: 2.0 },
+      { key: 'tree_b', tx: 73, ty: 38, scale: 2.0 },
+      { key: 'tree_a', tx: 38, ty: 58, scale: 2.0 },
+      { key: 'bush_a', tx: 44, ty: 28, scale: 2.0 },
+      { key: 'bush_b', tx: 56, ty: 32, scale: 2.0 },
+      { key: 'rock_a', tx: 35, ty: 28, scale: 2.2 },
+      { key: 'rock_b', tx: 65, ty: 30, scale: 2.2 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['madera_reforzada', 'hierba_medicinal'];
+    this.groundItemCount = 12;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 4: DESIERTO (sand, light ruins)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genDesierto() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.SAND);
+    this.f(0, ZONE_H - 1, 0,  2, T.WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 3, ZONE_W - 1, T.WALL);
+    // DIRT patches / dried riverbed
+    this.f(20, 24, 3, 44, T.DIRT);
+    this.f(55, 59, 55, 97, T.DIRT);
+    // Ruin west
+    this.f(8, 25, 6, 24, T.WALL);   this.f(9, 24, 7, 23, T.SAND);
+    this.f(16, 17, 6, 6, T.SAND);   // door
+    this.f(5, 5, 12, 18, T.SAND);   // collapsed section
+    // Ruin east
+    this.f(8, 25, 76, 94, T.WALL);  this.f(9, 24, 77, 93, T.SAND);
+    this.f(16, 17, 94, 94, T.SAND);
+    // Lower ruin west
+    this.f(45, 62, 8, 30, T.WALL);  this.f(46, 61, 9, 29, T.SAND);
+    this.f(53, 54, 8, 8, T.SAND);
+    // Lower ruin east
+    this.f(45, 62, 70, 92, T.WALL); this.f(46, 61, 71, 91, T.SAND);
+    this.f(53, 54, 92, 92, T.SAND);
+    this.openPassage();
+    this.enemies = [
+      { tx: 14, ty: 14, name: 'Esqueleto Rogue',  hp: 75  },
+      { tx: 84, ty: 14, name: 'Bandido Tirador',  hp: 80  },
+      { tx: 18, ty: 52, name: 'Bandido Tirador',  hp: 80  },
+      { tx: 78, ty: 53, name: 'Esqueleto Rogue',  hp: 75  },
+      { tx: 38, ty: 34, name: 'Bandido Bruto',    hp: 120 },
+      { tx: 62, ty: 34, name: 'Bandido Bruto',    hp: 120 },
+    ];
+    this.props = [
+      { key: 'pillar',        tx: 6,  ty: 8,  scale: 2.0 },
+      { key: 'pillar',        tx: 23, ty: 8,  scale: 2.0 },
+      { key: 'pillar_broken', tx: 8,  ty: 24, scale: 2.0 },
+      { key: 'pillar',        tx: 76, ty: 8,  scale: 2.0 },
+      { key: 'pillar_broken', tx: 92, ty: 24, scale: 2.0 },
+      { key: 'barrel',        tx: 36, ty: 18, scale: 2.5 },
+      { key: 'barrel',        tx: 64, ty: 18, scale: 2.5 },
+      { key: 'rock_a',        tx: 38, ty: 70, scale: 2.5 },
+      { key: 'rock_b',        tx: 62, ty: 70, scale: 2.5 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['arena_toxica', 'scrap'];
+    this.groundItemCount = 14;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 5: RUINAS ANTIGUAS (harder desert, big ruins)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genRuinas() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.SAND);
+    this.f(0, ZONE_H - 1, 0,  2, T.WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 3, ZONE_W - 1, T.WALL);
+    // ── Large temple ruin north-west ──────────────────────────────────────────
+    this.f(4, 32, 4, 40, T.WALL);    this.f(5, 31, 5, 39, T.SAND);
+    this.f(14, 18, 4, 4, T.SAND);    // west door
+    this.f(4, 4, 14, 26, T.SAND);    // roof hole
+    this.f(18, 20, 15, 20, T.WALL);  // interior wall
+    // ── Large temple ruin north-east ─────────────────────────────────────────
+    this.f(4, 32, 60, 96, T.WALL);   this.f(5, 31, 61, 95, T.SAND);
+    this.f(14, 18, 96, 96, T.SAND);
+    this.f(4, 4, 70, 82, T.SAND);
+    this.f(18, 20, 75, 80, T.WALL);
+    // ── Mid ruins center-west ─────────────────────────────────────────────────
+    this.f(38, 60, 18, 44, T.WALL);  this.f(39, 59, 19, 43, T.SAND);
+    this.f(48, 50, 18, 18, T.SAND);
+    // ── Mid ruins center-east ─────────────────────────────────────────────────
+    this.f(38, 60, 56, 82, T.WALL);  this.f(39, 59, 57, 81, T.SAND);
+    this.f(48, 50, 82, 82, T.SAND);
+    this.openPassage();
+    this.enemies = [
+      { tx: 14, ty: 10, name: 'Chamán Corrupto', hp: 160 },
+      { tx: 82, ty: 10, name: 'Esqueleto Mago',  hp: 95  },
+      { tx: 22, ty: 44, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 76, ty: 44, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 36, ty: 63, name: 'Esqueleto Rogue', hp: 75  },
+      { tx: 64, ty: 63, name: 'Esqueleto Rogue', hp: 75  },
+      { tx: 50, ty: 70, name: 'Bandido Bruto',   hp: 120 },
+    ];
+    this.props = [
+      { key: 'pillar_broken', tx: 5,  ty: 5,  scale: 2.0 },
+      { key: 'pillar_broken', tx: 38, ty: 5,  scale: 2.0 },
+      { key: 'pillar_broken', tx: 61, ty: 5,  scale: 2.0 },
+      { key: 'pillar_broken', tx: 94, ty: 5,  scale: 2.0 },
+      { key: 'pillar',        tx: 7,  ty: 30, scale: 2.0 },
+      { key: 'pillar',        tx: 94, ty: 30, scale: 2.0 },
+      { key: 'barrel',        tx: 22, ty: 50, scale: 2.5 },
+      { key: 'barrel',        tx: 78, ty: 50, scale: 2.5 },
+      { key: 'barrel_green',  tx: 40, ty: 68, scale: 2.5 },
+      { key: 'rock_a',        tx: 45, ty: 73, scale: 2.5 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['arena_toxica', 'cristal_corrompido'];
+    this.groundItemCount = 14;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 6: ZONA TÓXICA (hazard zone, narrow passage)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genToxic() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.TOXIC);
+    // Impassable liquid sides
+    this.f(0, ZONE_H - 1, 0,  3, T.WATER);
+    this.f(0, ZONE_H - 1, ZONE_W - 4, ZONE_W - 1, T.WATER);
+    // Toxic pools in rows (with PATH gap at center)
+    const poolRows = [14, 32, 50, 64];
+    for (const pr of poolRows) {
+      this.f(pr, pr + 5, 4, 45, T.WATER);
+      this.f(pr, pr + 5, 54, ZONE_W - 5, T.WATER);
+    }
+    // Island platforms (reachable via path)
+    this.f(20, 28, 12, 22, T.TOXIC);
+    this.f(20, 28, 78, 88, T.TOXIC);
+    this.f(38, 46, 16, 28, T.TOXIC);
+    this.f(38, 46, 72, 84, T.TOXIC);
+    this.openPassage();
+    this.enemies = [
+      { tx: 16, ty: 6,  name: 'Chamán Corrupto', hp: 160 },
+      { tx: 84, ty: 6,  name: 'Torreta',         hp: 100 },
+      { tx: 18, ty: 24, name: 'Chamán Corrupto', hp: 160 },
+      { tx: 82, ty: 26, name: 'Chamán Corrupto', hp: 160 },
+      { tx: 50, ty: 42, name: 'Torreta',         hp: 100 },
+      { tx: 35, ty: 70, name: 'Chamán Corrupto', hp: 160 },
+    ];
+    this.props = [
+      { key: 'barrel_green', tx: 20, ty: 4,  scale: 2.5 },
+      { key: 'barrel_green', tx: 78, ty: 4,  scale: 2.5 },
+      { key: 'barrel_green', tx: 10, ty: 22, scale: 2.5 },
+      { key: 'barrel_green', tx: 90, ty: 24, scale: 2.5 },
+      { key: 'barrel_green', tx: 14, ty: 46, scale: 2.5 },
+      { key: 'barrel_green', tx: 86, ty: 46, scale: 2.5 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['cristal_corrompido', 'arena_toxica'];
+    this.groundItemCount = 10;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 7: DUNGEON (dungeon entry, skeleton hordes)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genDungeon() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.DUNGEON);
+    this.f(0, ZONE_H - 1, 0,  1, T.FORT_WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 2, ZONE_W - 1, T.FORT_WALL);
+    // ── Room 1: west ─────────────────────────────────────────────────────────
+    this.f(6, 30, 4, 40, T.FORT_WALL);   this.f(7, 29, 5, 39, T.DUNGEON);
+    this.f(17, 19, 4, 4, T.DUNGEON);     // west door
+    this.f(17, 19, 40, 40, T.PATH);      // east door
+    // Pillars
+    this.f(10, 12, 9, 11, T.FORT_WALL);  this.f(10, 12, 18, 20, T.FORT_WALL);
+    this.f(22, 24, 9, 11, T.FORT_WALL);  this.f(22, 24, 18, 20, T.FORT_WALL);
+    // Toxic pool inside room 1
+    this.f(13, 18, 26, 36, T.WATER);
+    // ── Room 2: east ─────────────────────────────────────────────────────────
+    this.f(6, 30, 60, 96, T.FORT_WALL);  this.f(7, 29, 61, 95, T.DUNGEON);
+    this.f(17, 19, 60, 60, T.PATH);
+    this.f(17, 19, 96, 96, T.DUNGEON);
+    this.f(10, 12, 79, 81, T.FORT_WALL); this.f(10, 12, 88, 90, T.FORT_WALL);
+    this.f(22, 24, 79, 81, T.FORT_WALL); this.f(22, 24, 88, 90, T.FORT_WALL);
+    this.f(13, 18, 64, 74, T.WATER);
+    // ── Room 3: south-center large ───────────────────────────────────────────
+    this.f(38, 72, 24, 76, T.FORT_WALL); this.f(39, 71, 25, 75, T.DUNGEON);
+    this.f(54, 56, 24, 24, T.PATH);      // west door
+    this.f(54, 56, 76, 76, T.PATH);      // east door
+    this.f(38, 38, 47, 52, T.PATH);      // north door
+    this.f(72, 72, 47, 52, T.PATH);      // south door
+    // Interior pillars
+    this.f(42, 44, 30, 32, T.FORT_WALL); this.f(42, 44, 44, 46, T.FORT_WALL);
+    this.f(42, 44, 54, 56, T.FORT_WALL); this.f(42, 44, 68, 70, T.FORT_WALL);
+    this.f(64, 66, 30, 32, T.FORT_WALL); this.f(64, 66, 68, 70, T.FORT_WALL);
+    // Toxic pools
+    this.f(50, 56, 33, 40, T.WATER);
+    this.f(50, 56, 60, 67, T.WATER);
+    this.openPassage();
+    this.enemies = [
+      { tx: 20, ty: 14, name: 'Esqueleto Base',  hp: 85  },
+      { tx: 30, ty: 20, name: 'Esqueleto Rogue', hp: 75  },
+      { tx: 74, ty: 14, name: 'Esqueleto Mago',  hp: 95  },
+      { tx: 84, ty: 20, name: 'Esqueleto Base',  hp: 85  },
+      { tx: 38, ty: 52, name: 'Chamán Corrupto', hp: 160 },
+      { tx: 62, ty: 54, name: 'Esqueleto Mago',  hp: 95  },
+      { tx: 50, ty: 64, name: 'Esqueleto Rogue', hp: 75  },
+    ];
+    this.props = [
+      { key: 'cryobox', tx: 6,  ty: 8,  scale: 1.8 },
+      { key: 'cryobox', tx: 36, ty: 8,  scale: 1.8 },
+      { key: 'locker',  tx: 64, ty: 8,  scale: 2.2 },
+      { key: 'locker',  tx: 66, ty: 8,  scale: 2.2 },
+      { key: 'locker',  tx: 92, ty: 8,  scale: 2.2 },
+      { key: 'locker',  tx: 94, ty: 8,  scale: 2.2 },
+      { key: 'barrel',        tx: 30, ty: 44, scale: 2.2 },
+      { key: 'barrel_green',  tx: 32, ty: 47, scale: 2.2 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['cristal_corrompido'];
+    this.groundItemCount = 12;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 8: DUNGEON PROFUNDO (boss prep, heavy dungeon)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genDungeonDeep() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.DUNGEON);
+    this.f(0, ZONE_H - 1, 0,  1, T.FORT_WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 2, ZONE_W - 1, T.FORT_WALL);
+    // ── Main chamber ─────────────────────────────────────────────────────────
+    this.f(4, 36, 14, 86, T.FORT_WALL); this.f(5, 35, 15, 85, T.DUNGEON);
+    this.f(19, 21, 14, 14, T.PATH);     // west door
+    this.f(19, 21, 86, 86, T.PATH);     // east door
+    this.f(4,  4,  47, 52, T.PATH);     // north door
+    this.f(36, 36, 47, 52, T.PATH);     // south door
+    // Pillar array inside
+    for (const [r, c] of [[8,20],[8,30],[8,70],[8,80],[28,20],[28,30],[28,70],[28,80]]) {
+      this.f(r, r + 2, c, c + 2, T.FORT_WALL);
+    }
+    // ── South rooms ──────────────────────────────────────────────────────────
+    this.f(44, 70, 4, 44, T.FORT_WALL);  this.f(45, 69, 5, 43, T.DUNGEON);
+    this.f(56, 58, 44, 44, T.PATH);
+    this.f(44, 70, 56, 96, T.FORT_WALL); this.f(45, 69, 57, 95, T.DUNGEON);
+    this.f(56, 58, 56, 56, T.PATH);
+    // Toxic pools
+    this.f(50, 56, 10, 22, T.WATER); this.f(50, 56, 28, 40, T.WATER);
+    this.f(50, 56, 60, 72, T.WATER); this.f(50, 56, 78, 88, T.WATER);
+    this.openPassage();
+    this.enemies = [
+      { tx: 28, ty: 12, name: 'Esqueleto Mago',  hp: 95  },
+      { tx: 50, ty: 12, name: 'Chamán Corrupto', hp: 160 },
+      { tx: 72, ty: 12, name: 'Esqueleto Mago',  hp: 95  },
+      { tx: 20, ty: 28, name: 'Chamán Corrupto', hp: 160 },
+      { tx: 80, ty: 28, name: 'Esqueleto Mago',  hp: 95  },
+      { tx: 18, ty: 56, name: 'Esqueleto Rogue', hp: 75  },
+      { tx: 78, ty: 56, name: 'Esqueleto Rogue', hp: 75  },
+      { tx: 50, ty: 64, name: 'Torreta',         hp: 100 },
+    ];
+    this.props = [
+      { key: 'biocomputer', tx: 16, ty: 6,  scale: 1.5 },
+      { key: 'biocomputer', tx: 82, ty: 6,  scale: 1.5 },
+      { key: 'cryobox',     tx: 16, ty: 22, scale: 1.8 },
+      { key: 'cryobox',     tx: 82, ty: 22, scale: 1.8 },
+      { key: 'lockers',     tx: 17, ty: 30, scale: 1.5 },
+      { key: 'lockers',     tx: 80, ty: 30, scale: 1.5 },
+      { key: 'barrel_green', tx: 6,  ty: 55, scale: 2.2 },
+      { key: 'barrel_green', tx: 94, ty: 55, scale: 2.2 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['cristal_corrompido', 'placa_ia'];
+    this.groundItemCount = 14;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ZONE 9: BASE IA ENEMIGA (enemy base, boss zone)
+  // ─────────────────────────────────────────────────────────────────────────────
+  private genBaseIA() {
+    this.f(0, ZONE_H - 1, 0, ZONE_W - 1, T.FORT);
+    this.f(0, ZONE_H - 1, 0,  1, T.FORT_WALL);
+    this.f(0, ZONE_H - 1, ZONE_W - 2, ZONE_W - 1, T.FORT_WALL);
+    // North border (boss protected zone)
+    this.f(0, 2, 0, ZONE_W - 1, T.FORT_WALL);
+    this.f(0, 2, 46, 53, T.FORT); // north path through
+    // ── Boss command center ───────────────────────────────────────────────────
+    this.f(3, 28, 18, 82, T.FORT_WALL); this.f(4, 27, 19, 81, T.FORT);
+    this.f(15, 17, 18, 18, T.PATH);     // west door
+    this.f(15, 17, 82, 82, T.PATH);     // east door
+    this.f(3,  3,  46, 53, T.PATH);     // boss door (north)
+    this.f(28, 28, 46, 53, T.PATH);     // south door
+    // Boss position in center of command room
+    this.boss = { tx: 50, ty: 12, name: 'El Devorador', hp: 600 };
+    // ── Secondary bunkers ─────────────────────────────────────────────────────
+    this.f(34, 56, 4, 38, T.FORT_WALL); this.f(35, 55, 5, 37, T.FORT);
+    this.f(44, 46, 38, 38, T.PATH);
+    this.f(34, 56, 62, 96, T.FORT_WALL); this.f(35, 55, 63, 95, T.FORT);
+    this.f(44, 46, 62, 62, T.PATH);
+    // ── Guard towers (corners of command center) ──────────────────────────────
+    this.f(3, 8, 18, 24, T.FORT_WALL);
+    this.f(3, 8, 76, 82, T.FORT_WALL);
+    this.f(22, 28, 18, 24, T.FORT_WALL);
+    this.f(22, 28, 76, 82, T.FORT_WALL);
+    // Main path
+    this.openPassage();
+    this.enemies = [
+      { tx: 24, ty: 32, name: 'Bandido Tirador', hp: 80  },
+      { tx: 76, ty: 32, name: 'Bandido Tirador', hp: 80  },
+      { tx: 14, ty: 42, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 86, ty: 42, name: 'Bandido Bruto',   hp: 120 },
+      { tx: 18, ty: 56, name: 'Torreta',         hp: 100 },
+      { tx: 82, ty: 56, name: 'Torreta',         hp: 100 },
+      { tx: 50, ty: 66, name: 'Bandido Tirador', hp: 80  },
+      { tx: 32, ty: 70, name: 'Torreta',         hp: 100 },
+      { tx: 68, ty: 70, name: 'Torreta',         hp: 100 },
+    ];
+    this.props = [
+      { key: 'computer_evil', tx: 20, ty: 4,  scale: 2.0 },
+      { key: 'computer_evil', tx: 80, ty: 4,  scale: 2.0 },
+      { key: 'computer',      tx: 22, ty: 10, scale: 2.5 },
+      { key: 'computer',      tx: 78, ty: 10, scale: 2.5 },
+      { key: 'machine_a',     tx: 20, ty: 18, scale: 1.8 },
+      { key: 'machine_a',     tx: 80, ty: 18, scale: 1.8 },
+      { key: 'machine_b',     tx: 38, ty: 37, scale: 1.8 },
+      { key: 'machine_b',     tx: 62, ty: 37, scale: 1.8 },
+      { key: 'machine_c',     tx: 6,  ty: 44, scale: 1.8 },
+      { key: 'machine_c',     tx: 94, ty: 44, scale: 1.8 },
+      { key: 'barrel',        tx: 36, ty: 60, scale: 2.5 },
+      { key: 'barrel',        tx: 64, ty: 60, scale: 2.5 },
+    ];
+    this.playerSpawn    = { tx: 50, ty: ZONE_H - 4 };
+    this.groundItemIds  = ['placa_ia'];
+    this.groundItemCount = 12;
   }
 }

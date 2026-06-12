@@ -1,5 +1,5 @@
 import { Application, Container, Sprite, Graphics, Text, Assets, Texture, Rectangle } from 'pixi.js';
-import { TileMap, TILE, TILE_SPRITE, TILE_COLOR, SPAWN, ZONE } from './tilemap';
+import { TileMap, TILE, TILE_SPRITE, TILE_COLOR, ZONE_NAMES, ZONE_COUNT, ZONE_W, ZONE_H } from './tilemap';
 import { CLASSES, SPELLS, ITEMS } from '../data';
 
 const DAMAGE_MULT: Record<string, number> = {
@@ -107,6 +107,7 @@ export interface HudState {
   isInvisible: boolean;
   logs: LogEntry[];
   fps: number; ping: number;
+  zoneName: string; zoneIdx: number;
   minimap: {
     mapW: number; mapH: number;
     playerTx: number; playerTy: number;
@@ -132,14 +133,19 @@ export class GameEngine {
   entityLayer = new Container();
   fxLayer = new Container();
   previewG = new Graphics();
-  overlayG = new Graphics();   // hover target + cursor cargado
+  overlayG = new Graphics();
   mouseWX = 0; mouseWY = 0;
   classOffset = { x: 0, y: 0 };
-  hitstop = 0;                 // micro-freeze al impacto
-  pressedOrder: string[] = []; // dirección más reciente gana
+  hitstop = 0;
+  pressedOrder: string[] = [];
   map: TileMap;
   classId: string;
   cls: any;
+
+  currentZone = 0;
+  pendingZoneChange: { idx: number; fromSouth: boolean } | null = null;
+  onZoneChange: (() => void) | null = null;
+  private _propSprites: Sprite[] = [];
 
   player!: Entity & {
     energy: number; maxEnergy: number; energyRegen: number; baseDamage: number;
@@ -157,9 +163,7 @@ export class GameEngine {
   remotePlayers = new Map<string, RemotePEntry>();
   fps = 0; ping = 0;
   isHost = true;
-  // Non-host: called when player hits an enemy; relays the attack to host
   onHitEnemy: ((idx: number, dmg: number, cc: CC | null, ccDur: number) => void) | null = null;
-  // Any player: called when they pick up an item (non-host relays to host to remove from world)
   onPickup: ((tileX: number, tileY: number) => void) | null = null;
 
   keys = new Set<string>();
@@ -181,7 +185,7 @@ export class GameEngine {
   constructor(classId: string) {
     this.classId = classId;
     this.cls = CLASSES[classId];
-    this.map = new TileMap(100, 500, 7);
+    this.map = new TileMap(0);
     this.app = new Application();
   }
 
@@ -202,6 +206,7 @@ export class GameEngine {
     await this.loadTextures();
     this.buildTiles();
     this.buildGrid();
+    this.buildProps();
     this.spawnEntities();
     this.spawnGroundItems();
 
@@ -245,7 +250,6 @@ export class GameEngine {
         this.animFrames[key] = sliced;
       } catch { /* sprite missing, will fall back to colored box */ }
     }
-    // Explosion spritesheets: explosion_sm = 8 frames 32px, explosion_lg = 8 frames 48px
     const exSheets: [string, number, number][] = [
       ['explosion_sm', 8, 32], ['explosion_lg', 8, 48],
     ];
@@ -256,26 +260,60 @@ export class GameEngine {
         for (let i = 0; i < frames; i++)
           sliced.push(new Texture({ source: base.source, frame: new Rectangle(i * size, 0, size, size) }));
         this.animFrames[key] = sliced;
-      } catch { /* fallback to graphic circles */ }
+      } catch { /* fallback circles */ }
+    }
+    const propKeys = [
+      'tree_a', 'tree_b', 'bush_a', 'bush_b', 'rock_a', 'rock_b',
+      'barrel', 'barrel_green', 'computer', 'computer_evil',
+      'machine_a', 'machine_b', 'machine_c',
+      'locker', 'lockers', 'cryobox', 'pillar', 'pillar_broken', 'biocomputer',
+    ];
+    for (const key of propKeys) {
+      try { this.textures[`prop_${key}`] = await Assets.load(`/assets/props/${key}.png`); } catch { /* missing */ }
     }
   }
 
   buildTiles() {
+    const byType = new Map<number, [number, number][]>();
     for (let ty = 0; ty < this.map.height; ty++)
       for (let tx = 0; tx < this.map.width; tx++) {
         const t = this.map.tiles[ty][tx];
-        const tex = this.textures[`/assets/tiles/${TILE_SPRITE[t]}.png`];
-        if (tex) {
+        if (!byType.has(t)) byType.set(t, []);
+        byType.get(t)!.push([tx, ty]);
+      }
+    for (const [tileType, positions] of byType) {
+      const tex = this.textures[`/assets/tiles/${TILE_SPRITE[tileType]}.png`];
+      if (tex) {
+        for (const [tx, ty] of positions) {
           const s = new Sprite(tex);
           s.width = TILE; s.height = TILE;
           s.position.set(tx * TILE, ty * TILE);
           this.tileLayer.addChild(s);
-        } else {
-          const c = TILE_COLOR[t] ?? 0x4e6e3c;
-          const g = new Graphics().rect(tx * TILE, ty * TILE, TILE, TILE).fill(c);
-          this.tileLayer.addChild(g);
         }
+      } else {
+        const c = TILE_COLOR[tileType] ?? 0x4e6e3c;
+        const g = new Graphics();
+        for (const [tx, ty] of positions) g.rect(tx * TILE, ty * TILE, TILE, TILE);
+        g.fill(c);
+        this.tileLayer.addChild(g);
       }
+    }
+  }
+
+  buildProps() {
+    for (const spr of this._propSprites) { spr.parent?.removeChild(spr); spr.destroy(); }
+    this._propSprites = [];
+    for (const p of this.map.props) {
+      const tex = this.textures[`prop_${p.key}`];
+      if (!tex) continue;
+      const spr = new Sprite(tex);
+      spr.anchor.set(0.5, 1.0);
+      spr.scale.set(p.scale ?? 1.0);
+      spr.position.set(p.tx * TILE + TILE / 2, p.ty * TILE + TILE);
+      spr.zIndex = p.ty * TILE + TILE;
+      this.entityLayer.addChild(spr);
+      this._propSprites.push(spr);
+    }
   }
 
   buildGrid() {
@@ -340,7 +378,7 @@ export class GameEngine {
   }
 
   spawnEntities() {
-    const { tx: cx, ty: cy } = SPAWN.player;
+    const { tx: cx, ty: cy } = this.map.playerSpawn;
     const st = this.cls.stats;
     const p = this.makeEntity('player', this.cls.name, cx, cy, '', st.max_hp, 1) as any;
     p.energy = st.max_energy; p.maxEnergy = st.max_energy; p.energyRegen = st.energy_regen;
@@ -352,22 +390,7 @@ export class GameEngine {
     p.isInvisible = false; p.invisTimer = 0;
     this.player = p;
     this.classOffset = CLASS_OFFSET[this.classId] || { x: 0, y: 0 };
-
-    // NPCs en la base del jugador
-    this.npcs = SPAWN.npcs.map(({ tx, ty, name }) =>
-      this.makeEntity('npc', name, tx, ty, '', 999, 1)
-    );
-
-    // Enemigos en mundo abierto + fortaleza
-    this.enemies = SPAWN.enemies.map(({ tx, ty, name, hp }) =>
-      this.makeEntity('enemy', name, tx, ty, '', hp, 1)
-    );
-
-    // Boss en la fortaleza
-    const boss = this.makeEntity('boss', SPAWN.boss.name, SPAWN.boss.tx, SPAWN.boss.ty, '', SPAWN.boss.hp, 1);
-    this.enemies.push(boss);
-
-    // Inventario inicial
+    this.spawnEnemiesNpcs();
     this.inventory = [
       { itemId: 'hp_potion', qty: 12 }, { itemId: 'mp_potion', qty: 12 },
       { itemId: 'hp_potion_large', qty: 6 }, { itemId: 'mp_potion_large', qty: 6 },
@@ -375,28 +398,32 @@ export class GameEngine {
     ];
   }
 
+  spawnEnemiesNpcs() {
+    for (const { tx, ty, name, hp } of this.map.enemies)
+      this.enemies.push(this.makeEntity('enemy', name, tx, ty, '', hp, 1));
+    if (this.map.boss) {
+      const { tx, ty, name, hp } = this.map.boss;
+      this.enemies.push(this.makeEntity('boss', name, tx, ty, '', hp, 1));
+    }
+    this.npcs = this.map.npcs.map(({ tx, ty, name }) =>
+      this.makeEntity('npc', name, tx, ty, '', 999, 1));
+  }
+
   // ── ground items ──────────────────────────────────────────────────────────
   spawnGroundItems() {
-    const zoneItems: { y0: number; y1: number; items: string[]; count: number }[] = [
-      { y0: ZONE.ENEMY_BASE.y0,  y1: ZONE.ENEMY_BASE.y1,  items: ['placa_ia'],                         count: 12 },
-      { y0: ZONE.DUNGEON.y0,     y1: ZONE.DUNGEON.y1,      items: ['cristal_corrompido'],               count: 18 },
-      { y0: ZONE.DESERT.y0,      y1: ZONE.DESERT.y1,       items: ['arena_toxica', 'scrap'],            count: 20 },
-      { y0: ZONE.FOREST.y0,      y1: ZONE.FOREST.y1,       items: ['madera_reforzada', 'hierba_medicinal'], count: 22 },
-      { y0: ZONE.PLAYER_BASE.y0, y1: ZONE.PLAYER_BASE.y1,  items: ['scrap'],                            count: 8  },
-    ];
-    for (const zone of zoneItems) {
-      let placed = 0, attempts = 0;
-      while (placed < zone.count && attempts < 3000) {
-        attempts++;
-        const tx = Math.floor(Math.random() * this.map.width);
-        const ty = zone.y0 + Math.floor(Math.random() * (zone.y1 - zone.y0 + 1));
-        if (this.map.isSolid(tx, ty)) continue;
-        const occupied = [this.player, ...this.enemies, ...this.npcs].some(e => e.tileX === tx && e.tileY === ty);
-        if (occupied) continue;
-        const itemId = zone.items[Math.floor(Math.random() * zone.items.length)];
-        this.groundItems.push({ itemId, qty: 1, tileX: tx, tileY: ty, t: Math.random() * Math.PI * 2 });
-        placed++;
-      }
+    const items = this.map.groundItemIds;
+    const count = this.map.groundItemCount;
+    let placed = 0, attempts = 0;
+    while (placed < count && attempts < 3000) {
+      attempts++;
+      const tx = Math.floor(Math.random() * this.map.width);
+      const ty = Math.floor(Math.random() * this.map.height);
+      if (this.map.isSolid(tx, ty)) continue;
+      const occupied = [this.player, ...this.enemies, ...this.npcs].some(e => e.tileX === tx && e.tileY === ty);
+      if (occupied) continue;
+      const itemId = items[Math.floor(Math.random() * items.length)];
+      this.groundItems.push({ itemId, qty: 1, tileX: tx, tileY: ty, t: Math.random() * Math.PI * 2 });
+      placed++;
     }
   }
 
@@ -565,7 +592,12 @@ export class GameEngine {
   // ── update loop ────────────────────────────────────────────────────────────
   update(dt: number) {
     dt = Math.min(dt, 0.05);
-    // Hitstop: micro-freeze que ralentiza la sim brevemente al impactar
+    if (this.pendingZoneChange) {
+      const { idx, fromSouth } = this.pendingZoneChange;
+      this.pendingZoneChange = null;
+      this.loadZone(idx, fromSouth);
+      return;
+    }
     if (this.hitstop > 0) { this.hitstop -= dt; dt *= 0.18; }
     this.updatePlayer(dt);
     for (const e of this.enemies) {
@@ -624,6 +656,17 @@ export class GameEngine {
 
   tryMove(e: Entity, dx: number, dy: number, ghost: boolean): boolean {
     const nx = e.tileX + dx, ny = e.tileY + dy;
+    // Zone transitions for player on north/south edge
+    if (e.kind === 'player') {
+      if (ny < 0 && this.currentZone < ZONE_COUNT - 1) {
+        this.pendingZoneChange = { idx: this.currentZone + 1, fromSouth: true };
+        return false;
+      }
+      if (ny >= ZONE_H && this.currentZone > 0) {
+        this.pendingZoneChange = { idx: this.currentZone - 1, fromSouth: false };
+        return false;
+      }
+    }
     if (this.map.isSolid(nx, ny)) return false;
     if (!ghost) {
       const all = e.kind === 'player' ? this.enemies : [this.player, ...this.enemies];
@@ -631,6 +674,33 @@ export class GameEngine {
     }
     e.tileX = nx; e.tileY = ny; e.tgtX = nx * TILE; e.tgtY = ny * TILE; e.moving = true;
     return true;
+  }
+
+  loadZone(idx: number, fromSouth: boolean) {
+    this.currentZone = idx;
+    this.map = new TileMap(idx);
+    for (const c of [...this.tileLayer.children]) c.destroy();
+    this.tileLayer.removeChildren();
+    this.gridLayer.clear();
+    this.groundG.clear();
+    for (const e of [...this.enemies, ...this.npcs]) {
+      const cont = (e as any).cont as Container;
+      cont?.parent?.removeChild(cont); cont?.destroy({ children: true });
+    }
+    this.enemies = []; this.npcs = [];
+    for (const fx of this.effects) { fx.obj.parent?.removeChild(fx.obj); fx.obj.destroy(); }
+    this.effects = []; this.pendingDamage = []; this.pendingAreas = [];
+    this.groundItems = [];
+    const ty2 = fromSouth ? ZONE_H - 4 : 3;
+    this.player.tileX = Math.floor(ZONE_W / 2); this.player.tileY = ty2;
+    this.player.tgtX = this.player.tileX * TILE; this.player.tgtY = ty2 * TILE;
+    this.player.visX = this.player.tgtX; this.player.visY = this.player.tgtY;
+    this.player.moving = false;
+    this.player.spawnX = this.player.tileX; this.player.spawnY = this.player.tileY;
+    this.buildTiles(); this.buildGrid(); this.buildProps();
+    this.spawnEnemiesNpcs(); this.spawnGroundItems();
+    this.addLog(`▶ ${ZONE_NAMES[idx]}`, '#88ddff');
+    this.onZoneChange?.();
   }
 
   updateEnemy(dt: number, e: Entity) {
@@ -1250,7 +1320,8 @@ export class GameEngine {
       isInvisible: p.isInvisible,
       logs: this.logs.slice(-8),
       fps: Math.round(this.fps), ping: Math.round(this.ping),
-      minimap: { mapW: this.map.width, mapH: this.map.height, playerTx: p.tileX, playerTy: p.tileY, dots },
+      minimap: { mapW: ZONE_W, mapH: ZONE_H, playerTx: p.tileX, playerTy: p.tileY, dots },
+      zoneName: ZONE_NAMES[this.currentZone], zoneIdx: this.currentZone,
     };
   }
 
