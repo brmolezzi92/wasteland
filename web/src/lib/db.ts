@@ -331,6 +331,16 @@ export async function leaveQueue(userId: string) {
   await supabase.from('matchmaking_queue').delete().eq('user_id', userId);
 }
 
+export async function checkQueueMatch(userId: string): Promise<string | null> {
+  const { data } = await supabase
+    .from('matchmaking_queue')
+    .select('status, room_id')
+    .eq('user_id', userId)
+    .single();
+  if (data?.status === 'matched' && data?.room_id) return String(data.room_id);
+  return null;
+}
+
 export function subscribeQueueStatus(
   userId: string,
   onMatched: (roomId: string) => void,

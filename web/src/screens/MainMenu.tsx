@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { useStore, avgElo } from '../store';
 import { CLASSES, eloToRank, rgb } from '../data';
-import { signOut, sendFriendRequest, acceptFriendRequest, removeFriend, getFriends, getPendingRequests, joinQueue, leaveQueue, subscribeQueueStatus } from '../lib/db';
+import { signOut, sendFriendRequest, acceptFriendRequest, removeFriend, getFriends, getPendingRequests, joinQueue, leaveQueue, subscribeQueueStatus, checkQueueMatch } from '../lib/db';
 import type { DbCharacter, DbFriend, DbFriendRequest } from '../lib/db';
 import './MainMenu.css';
 
@@ -165,14 +165,26 @@ export default function MainMenu() {
       : (profile?.elo_4v4 ?? 1500);
 
     setQueueMode(activeMode); setQueueSec(0);
-    await joinQueue(authUserId, activeMode, modeElo);
+    const capturedMode = activeMode;
 
-    queueTimerRef.current = setInterval(() => setQueueSec((s) => s + 1), 1000);
-
+    // 1. Suscribir ANTES del INSERT para no perder el UPDATE del trigger
     queueRef.current = subscribeQueueStatus(authUserId, (roomId) => {
       cancelQueue();
-      startGame(activeMode + ':' + roomId);
+      startGame(capturedMode + ':' + roomId);
     });
+
+    // 2. Insertar en la cola (trigger empareja si hay rival)
+    await joinQueue(authUserId, capturedMode, modeElo);
+
+    // 3. Poll inmediato: si el trigger actuó antes de que el WS registrara la suscripción
+    const roomId = await checkQueueMatch(authUserId);
+    if (roomId) {
+      cancelQueue();
+      startGame(capturedMode + ':' + roomId);
+      return;
+    }
+
+    queueTimerRef.current = setInterval(() => setQueueSec((s) => s + 1), 1000);
   };
 
   const cancelQueue = () => {
